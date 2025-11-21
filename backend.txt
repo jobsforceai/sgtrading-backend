@@ -1,0 +1,673 @@
+Perfect, let’s lock in a **backend spec** your team can treat as a mini-PRD + architecture doc.
+
+I’ll assume:
+
+* **Backend**: Node.js + TypeScript + Express (or Fastify)
+* **DB**: MongoDB (with Mongoose)
+* **Queues**: BullMQ (Redis)
+* **Infra**: AWS (ECS/EC2/Lambda – flexible)
+* **Frontend**: Next.js consumes these APIs (not coupled to backend)
+
+You can literally copy-paste this to Notion/Google Docs as **“Trading Backend Architecture v1”**.
+
+---
+
+# 1. Goals & Principles
+
+### 1.1 Product Scope (Backend)
+
+The backend must support:
+
+1. **User accounts & auth** (JWT-based)
+2. **Wallets & ledger** for:
+
+   * Live balance (funded via SGCoin deposits)
+   * Demo balance (virtual money)
+3. **SGCoin deposit flow** via SGChain:
+
+   * Create a **deposit intent** on trading site
+   * User completes payment on SGChain site
+   * SGChain backend notifies trading backend via webhook
+4. **Trading engine**:
+
+   * Create trades (up/down style, fixed time)
+   * Periodic settlement based on **external market data**
+   * Update wallet balances & history
+5. **Market data ingestion** from external providers:
+
+   * Real-time quotes (via WS/REST)
+   * Cache quotes in Redis
+   * Stream to frontend & partners
+6. **Partner/Public APIs**:
+
+   * Access to instruments, quotes, and trading endpoints
+   * API keys, rate limiting, usage tracking
+
+### 1.2 Core Principles
+
+* **Fair & Transparent**:
+  Prices and trade outcomes must come from reliable external feeds.
+  No hidden manipulation logic—our “edge” is via **fees/spreads/payout %**, not rigging.
+
+* **API-First**:
+  Everything is built as clean REST APIs that both:
+
+  * The Next.js frontend uses, and
+  * External partners can use.
+
+* **Modular & Extensible**:
+
+  * Distinct modules: `auth`, `user`, `wallet`, `market`, `trading`, `sgc-onramp`, `partner`, `admin`.
+  * Easy to add copy trading, bots, and insurance later.
+
+* **Performance & Caching**:
+
+  * Use Redis for:
+
+    * Market quotes
+    * Instrument configs cache
+    * Balance summary cache
+    * Rate limit counters
+
+* **Reliability & Safety**:
+
+  * Use **BullMQ** workers for:
+
+    * Trade settlement
+    * Market data ingestion
+    * Deposit confirmation
+    * Webhook retries
+  * Use **idempotent** handlers (especially for webhooks and trade settlement).
+
+---
+
+# 2. High-Level Architecture
+
+### 2.1 Logical Services (Modules)
+
+In one Node app, but organized as modules:
+
+1. **Auth Module**
+
+   * Register, login, refresh tokens.
+   * Role-based access (user, admin, partner).
+
+2. **User Module**
+
+   * User profile, KYC status, preferences.
+
+3. **Wallet & Ledger Module**
+
+   * Wallets: live & demo balances.
+   * Ledger entries (double-entry principle on top of Mongo).
+   * Deposit/withdrawal records.
+
+4. **SGC Onramp Module**
+
+   * Handles SGCoin deposit intents & confirmations (webhooks from SGChain backend).
+
+5. **Market Data Module**
+
+   * Connects to external data provider(s).
+   * Normalizes price feeds.
+   * Publishes to Redis + triggers updates to WebSocket gateway.
+
+6. **Trading Module**
+
+   * Place trades.
+   * Schedule & settle trades (via BullMQ workers).
+   * Expose trade history.
+
+7. **Partner/API Module**
+
+   * API keys.
+   * Partner quota and rate limits.
+   * Public endpoints for markets, quotes, and trade placement.
+
+8. **Admin & Risk Module**
+
+   * Configure instruments, payout %, trading hours, etc.
+   * Risk indicators, open exposure, PnL.
+
+---
+
+# 3. Tech Stack & Folder Structure
+
+### 3.1 Tech Choices
+
+* **Runtime**: Node.js (LTS), TypeScript
+* **Web Framework**: Express or Fastify (with structured routing)
+* **DB**: MongoDB (Atlas recommended) with **Mongoose**
+* **Redis**: For caching, pub/sub, queues
+* **Queues**: BullMQ
+* **Auth**: JWT (access + refresh), bcrypt for password hashing
+* **Config**: `dotenv` + central `config.ts` (12-factor)
+
+### 3.2 Suggested Folder Structure
+
+```txt
+backend/
+  src/
+    app.ts               # Express/Fastify app bootstrap
+    server.ts            # HTTP server startup
+
+    config/
+      config.ts          # env loading & validation
+      db.ts              # Mongo connection
+      redis.ts           # Redis connection
+      bullmq.ts          # BullMQ queues setup
+
+    common/
+      types/
+      errors/
+        ApiError.ts
+        errorHandler.ts
+      middleware/
+        authMiddleware.ts
+        rateLimitMiddleware.ts
+        requestLogger.ts
+      utils/
+        logger.ts
+        crypto.ts        # signing, HMAC, JWT helpers
+        validator.ts     # zod/joi validation helpers
+
+    modules/
+      auth/
+        auth.controller.ts
+        auth.service.ts
+        auth.routes.ts
+        auth.types.ts
+      users/
+        user.model.ts
+        user.service.ts
+        user.controller.ts
+        user.routes.ts
+      wallets/
+        wallet.model.ts
+        ledgerEntry.model.ts
+        wallet.service.ts
+        wallet.controller.ts
+        wallet.routes.ts
+      sgc-onramp/
+        depositIntent.model.ts
+        sgcOnramp.service.ts
+        sgcOnramp.controller.ts
+        sgcOnramp.routes.ts
+      market/
+        instrument.model.ts
+        market.service.ts
+        market.controller.ts
+        market.routes.ts
+        workers/
+          marketIngest.worker.ts
+      trading/
+        trade.model.ts
+        trading.service.ts
+        trading.controller.ts
+        trading.routes.ts
+        workers/
+          tradeSettlement.worker.ts
+      partner/
+        partner.model.ts
+        apiKey.model.ts
+        partner.service.ts
+        partner.controller.ts
+        partner.routes.ts
+      admin/
+        admin.controller.ts
+        admin.service.ts
+        admin.routes.ts
+
+    interfaces/
+      http/
+      ws/
+
+  test/
+    unit/
+    integration/
+
+  package.json
+  tsconfig.json
+  Dockerfile
+  docker-compose.yml
+```
+
+---
+
+# 4. Data Models (MongoDB)
+
+Below are **core collections** and their key fields. Exact type definitions can be done in Mongoose schemas.
+
+### 4.1 User
+
+```ts
+User {
+  _id: ObjectId
+  email: string
+  passwordHash: string
+  roles: string[]      // ['USER'] | ['ADMIN'] | ['PARTNER']
+  kycStatus: 'PENDING' | 'APPROVED' | 'REJECTED'
+  createdAt: Date
+  updatedAt: Date
+}
+```
+
+### 4.2 Wallet
+
+One document per user:
+
+```ts
+Wallet {
+  _id: ObjectId
+  userId: ObjectId
+  liveBalanceUsd: number       // monetary amounts in cents internally
+  demoBalanceUsd: number
+  currency: 'USD'
+  createdAt: Date
+  updatedAt: Date
+}
+```
+
+### 4.3 LedgerEntry
+
+Immutable journal entries:
+
+```ts
+LedgerEntry {
+  _id: ObjectId
+  walletId: ObjectId
+  userId: ObjectId
+  type: 'DEPOSIT' | 'WITHDRAWAL' | 'TRADE_OPEN_HOLD' | 'TRADE_PAYOUT' | 'TRADE_LOSS' | 'ADJUSTMENT'
+  mode: 'LIVE' | 'DEMO'
+  amountUsd: number           // positive or negative
+  referenceType: 'TRADE' | 'DEPOSIT_INTENT' | 'WITHDRAWAL_REQUEST' | 'ADMIN_ADJUSTMENT'
+  referenceId: ObjectId | string
+  createdAt: Date
+}
+```
+
+> **Rule**: All wallet modifications go through `LedgerEntry` + service that recomputes balances; direct writes to `Wallet` must be centralized in one service.
+
+### 4.4 Instrument (Market Symbols)
+
+```ts
+Instrument {
+  _id: ObjectId
+  symbol: string        // e.g. 'BTCUSDT'
+  displayName: string   // 'Bitcoin / Tether'
+  type: 'CRYPTO' | 'FOREX' | 'INDEX' | 'STOCK'
+  isEnabled: boolean
+  decimalPlaces: number
+
+  // Trading config:
+  minStakeUsd: number
+  maxStakeUsd: number
+  defaultPayoutPercent: number  // e.g. 80 = 80% payout on win
+  tradingHours: {
+    timezone: string
+    sessions: Array<{ day: number; open: string; close: string }> // optional for later
+  }
+
+  createdAt: Date
+  updatedAt: Date
+}
+```
+
+### 4.5 Trade
+
+```ts
+Trade {
+  _id: ObjectId
+  userId: ObjectId
+  walletId: ObjectId
+  mode: 'LIVE' | 'DEMO'
+  instrumentId: ObjectId
+  instrumentSymbol: string
+  direction: 'UP' | 'DOWN'
+  stakeUsd: number
+  payoutPercent: number       // snapshot at creation
+  entryPrice: number
+  exitPrice: number | null
+
+  status: 'OPEN' | 'SETTLED'
+  outcome: 'WIN' | 'LOSS' | 'DRAW' | null
+
+  requestedExpirySeconds: number       // user choice, e.g., 60, 300
+  openAt: Date
+  expiresAt: Date
+  settledAt: Date | null
+
+  createdAt: Date
+  updatedAt: Date
+}
+```
+
+### 4.6 DepositIntent (SGCoin Onramp)
+
+```ts
+DepositIntent {
+  _id: ObjectId
+  userId: ObjectId
+  amountUsd: number
+  sgcAmount: number
+  exchangeRate: number               // usd per SGC or reverse; be explicit in doc
+  status: 'PENDING' | 'CONFIRMED' | 'EXPIRED' | 'FAILED'
+  sgchainTxHash: string | null
+  payloadId: string                  // ID used in signed link (JWT/jti)
+  expiresAt: Date
+  createdAt: Date
+  updatedAt: Date
+}
+```
+
+### 4.7 Partner & APIKey
+
+```ts
+Partner {
+  _id: ObjectId
+  name: string
+  contactEmail: string
+  status: 'ACTIVE' | 'SUSPENDED'
+  createdAt: Date
+}
+
+ApiKey {
+  _id: ObjectId
+  partnerId: ObjectId
+  key: string           // hashed version stored
+  label: string
+  scopes: string[]      // ['read:markets', 'trade:orders']
+  rateLimitPerMinute: number
+  createdAt: Date
+}
+```
+
+---
+
+# 5. BullMQ Queues & Workers
+
+### 5.1 Queues
+
+Define queues in `config/bullmq.ts`:
+
+* `market:ingest`
+* `trade:settlement`
+* `sgc:deposit-confirm`
+* `webhook:retry` (for external notifications if needed)
+
+### 5.2 Market Ingestion Worker
+
+Responsible for:
+
+* Connecting to external provider (WS).
+* When new price tick arrives:
+
+  * Update Redis:
+
+    * `price:{symbol}` → JSON `{ bid, ask, last, ts }`
+  * Optionally push snapshots to `market:ingest` queue for persistence / analytics.
+
+*Core requirement*: keep latest price in Redis for fast reads during trade creation & settlement.
+
+### 5.3 Trade Settlement Worker
+
+Process `trade:settlement` jobs:
+
+**Flow:**
+
+1. Job payload: `{ tradeId }`
+2. Load trade from Mongo.
+3. If `status !== 'OPEN'` → ignore (idempotency).
+4. Fetch latest price from Redis for `instrumentSymbol`.
+5. Apply business rules:
+
+   * If `direction = UP` and `exitPrice > entryPrice` → WIN.
+   * If `direction = DOWN` and `exitPrice < entryPrice` → WIN.
+   * If equal → DRAW.
+6. Compute payout:
+
+   * On WIN: `stakeUsd + stakeUsd * payoutPercent / 100`.
+   * On LOSS: `0`.
+7. Start Mongo transaction (if using replica set) or carefully ordered writes:
+
+   * Create appropriate `LedgerEntry` records (loss & payout).
+   * Update Wallet (`liveBalanceUsd` or `demoBalanceUsd`).
+   * Update Trade document: `status`, `outcome`, `exitPrice`, `settledAt`.
+8. Handle errors with retries (limited maxAttempts) and dead-letter queue pattern if needed.
+
+### 5.4 SGC Deposit Confirmation Worker
+
+Webhook from SGChain sends request → we push into `sgc:deposit-confirm` queue to decouple:
+
+1. Job payload: `{ depositIntentId, txHash, amountSgc }`.
+2. Service validates:
+
+   * `status` is `PENDING`.
+   * `amountSgc` >= intent.sgсAmount (with tolerance).
+   * `expiresAt > now`.
+3. If valid:
+
+   * Create `LedgerEntry` for deposit.
+   * Increase `liveBalanceUsd`.
+   * Mark `DepositIntent.status = 'CONFIRMED'`.
+4. Idempotent: Webhook can be retried safely.
+
+---
+
+# 6. Redis & Caching Strategy
+
+### 6.1 Keys Overview
+
+* **Market data:**
+
+  * `price:{symbol}` → JSON `{ bid, ask, last, ts }`
+  * TTL: short (e.g. 5–10 seconds) but refreshed continuously.
+
+* **Instruments cache:**
+
+  * `instrument:list` → serialized list of enabled instruments.
+  * Invalidate on admin update.
+
+* **User balance snapshot (optional):**
+
+  * `wallet:summary:{userId}` → JSON `{ liveBalanceUsd, demoBalanceUsd }`
+  * Update on trade settlement or deposit/withdraw.
+
+* **Rate limiting:**
+
+  * `ratelimit:{key}:{minuteTimestamp}`
+
+### 6.2 Pattern
+
+* Prefer **read from Redis** on hot paths:
+
+  * Getting current price.
+  * Listing instruments.
+  * Getting current user balances (**optional optimization**, initial version can read from Mongo).
+
+* Invalidate on change via:
+
+  * Events inside services (e.g. after updating instruments or wallet).
+
+---
+
+# 7. REST API Design (v1)
+
+Use versioned routes: `/api/v1/...`
+
+### 7.1 Auth
+
+* `POST /api/v1/auth/register`
+* `POST /api/v1/auth/login`
+* `POST /api/v1/auth/refresh`
+* `POST /api/v1/auth/logout`
+
+### 7.2 User & Wallet
+
+* `GET /api/v1/me` → profile
+* `GET /api/v1/me/wallet` → balances & recent ledger items
+* `GET /api/v1/me/trades` → history (paged, filter by mode)
+
+### 7.3 Market
+
+* `GET /api/v1/markets/instruments`
+
+  * Returns cached instrument list from Redis.
+* `GET /api/v1/markets/quotes?symbol=BTCUSDT`
+
+  * Returns last cached quote from Redis.
+
+### 7.4 Trading
+
+* `POST /api/v1/trades`
+
+  * Body:
+
+    ```json
+    {
+      "mode": "LIVE",
+      "symbol": "BTCUSDT",
+      "direction": "UP",
+      "stakeUsd": 100,
+      "expirySeconds": 60
+    }
+    ```
+  * Flow:
+
+    * Validate user & wallet.
+    * Validate instrument config (min/max stake, enabled).
+    * Fetch price from Redis (`price:symbol`).
+    * Create trade with `entryPrice` and `expiresAt`.
+    * Reserve funds via `LedgerEntry` and wallet update.
+    * Enqueue `trade:settlement` job with `delay = expirySeconds * 1000`.
+
+* `GET /api/v1/trades/open`
+
+* `GET /api/v1/trades/history?mode=LIVE&limit=50&page=1`
+
+### 7.5 SGC Onramp
+
+* `POST /api/v1/deposits/sgc/intents`
+
+  * Body: `{ "amountUsd": 100 }`
+  * Response:
+
+    ```json
+    {
+      "depositIntentId": "dep_123",
+      "sgcAmount": 0.87,
+      "exchangeRate": 115, 
+      "sgchainUrl": "https://sgchain.yourdomain.com/deposit?payload=..."
+    }
+    ```
+
+* `POST /api/v1/deposits/sgc/webhook`
+  *(internal, should be protected with HMAC/IP whitelist)*
+
+  * Body:
+
+    ```json
+    {
+      "depositIntentId": "dep_123",
+      "txHash": "0xabc...",
+      "amountSgc": 0.87
+    }
+    ```
+  * Pushes to `sgc:deposit-confirm` queue.
+
+### 7.6 Partner APIs
+
+Protected with **API keys**:
+
+Header: `x-api-key: <key>`
+
+* `GET /api/v1/partner/markets/instruments`
+* `GET /api/v1/partner/markets/quotes?symbol=BTCUSDT`
+* `POST /api/v1/partner/trades`
+
+  * Same payload as user trades, but with `externalUserId` if they map users.
+
+---
+
+# 8. Security & Best Practices
+
+1. **JWT Handling**
+
+   * Access tokens: short TTL (e.g., 15–30 min).
+   * Refresh tokens: longer TTL, stored server-side (whitelist or hashed).
+
+2. **Password Security**
+
+   * Use `bcrypt` with suitable salt rounds.
+   * Never log raw credentials.
+
+3. **Input Validation**
+
+   * Use zod/joi for all request bodies + query params.
+   * Centralized validation middleware.
+
+4. **Rate limiting**
+
+   * Per IP or per user for public endpoints (Redis).
+   * Strict rate limiting for partner API.
+
+5. **Secrets Management**
+
+   * All secrets stored in AWS SSM / Secrets Manager.
+   * No secrets in repo, use `config.ts` with validation.
+
+6. **Logging**
+
+   * Structured logs via pino/winston.
+   * Log every trade create & settle with unique request/trace ID.
+   * Never log full JWT or sensitive PII.
+
+7. **Idempotency**
+
+   * Webhooks: use idempotency keys or `txHash` + `depositIntentId` uniqueness.
+   * Trade settlement: **check `trade.status`** before processing; no double settlement.
+
+---
+
+# 9. Deployment & Environments
+
+### 9.1 Envs
+
+* `dev` – local Docker (Mongo, Redis)
+* `staging` – AWS environment for QA
+* `prod` – live
+
+### 9.2 AWS Components (example)
+
+* **ECS Fargate / EC2**:
+
+  * Service: `trading-api` (HTTP)
+  * Service: `trading-workers` (BullMQ workers)
+* **AWS Elasticache (Redis)** for queues + caching.
+* **MongoDB Atlas** cluster.
+* **ALB or API Gateway + NLB** fronting services.
+* **CloudWatch** logs and metrics.
+
+---
+
+# 10. Roadmap Hooks (Future)
+
+Backend should keep room for:
+
+* **Copy trading**:
+
+  * Add `Strategy` & `StrategyFollower` collections.
+  * `trade.model.ts` can have optional `parentTradeId`, `strategyId`.
+
+* **Bot trading**:
+
+  * `Bot` collection with API keys.
+  * Bots call the same trading API with their key.
+
+* **Insurance**:
+
+  * Extra fields on `Trade`: `insuranceStakeUsd`, `insurancePlanId`.
+  * Extra ledger types: `INSURANCE_FEE`, `INSURANCE_PAYOUT`.
+
+---
+

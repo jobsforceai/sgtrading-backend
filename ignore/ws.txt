@@ -1,0 +1,81 @@
+'use client';
+
+import { useEffect, useState, useRef } from 'react';
+import { io, Socket } from 'socket.io-client';
+
+export type MarketTick = {
+  symbol: string; // This will be in the internal format (e.g., 'btcusdt', 'eur_usd')
+  last: number;
+  ts: number;
+};
+
+// Default to localhost if env var is not set
+// FORCE 8080 for now as env var seems to point to 5000 which is wrong
+const WS_URL = 'http://localhost:8080';
+
+const socket: Socket = io(WS_URL, {
+  transports: ['websocket'],
+  autoConnect: false, // We will connect manually
+});
+
+export const useSubscriptionMarketData = (symbols: string[]) => {
+  const [ticks, setTicks] = useState<Record<string, MarketTick>>({});
+  const subscribedSymbolsRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    if (!socket.connected) {
+      socket.connect();
+    }
+
+    const onConnect = () => {
+      console.log('Connected to market WS', socket.id);
+      // Re-subscribe to all symbols on reconnection
+      subscribedSymbolsRef.current.forEach(symbol => {
+        socket.emit('market:subscribe', symbol);
+      });
+    };
+
+    const onTick = (tick: MarketTick) => {
+      setTicks(prevTicks => ({
+        ...prevTicks,
+        [tick.symbol]: tick,
+      }));
+    };
+
+    const onDisconnect = () => {
+      console.log('Disconnected from market WS');
+    };
+
+    socket.on('connect', onConnect);
+    socket.on('market:tick', onTick);
+    socket.on('disconnect', onDisconnect);
+
+    // Subscribe to the symbols passed to the hook
+    symbols.forEach(symbol => {
+      if (symbol && !subscribedSymbolsRef.current.has(symbol)) {
+        console.log('Subscribing to:', symbol);
+        socket.emit('market:subscribe', symbol);
+        subscribedSymbolsRef.current.add(symbol);
+      }
+    });
+
+    // Unsubscribe from symbols that are no longer in the requested list
+    // (This handles when the user switches active symbols or the list changes)
+    const currentRequestedSet = new Set(symbols);
+    subscribedSymbolsRef.current.forEach(activeSymbol => {
+      if (!currentRequestedSet.has(activeSymbol)) {
+        console.log('Unsubscribing from:', activeSymbol);
+        socket.emit('market:unsubscribe', activeSymbol);
+        subscribedSymbolsRef.current.delete(activeSymbol);
+      }
+    });
+
+    return () => {
+        socket.off('connect', onConnect);
+        socket.off('market:tick', onTick);
+        socket.off('disconnect', onDisconnect);
+    };
+  }, [symbols.join(',')]); // Dependency on the stringified list of symbols to detect changes
+
+  return ticks;
+};

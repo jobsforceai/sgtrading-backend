@@ -1,0 +1,80 @@
+// src/scripts/updateInstruments.ts
+import Instrument from '../modules/market/instrument.model';
+import logger from '../common/utils/logger';
+import mongoose from 'mongoose';
+import dotenv from 'dotenv';
+import path from 'path';
+
+// Load environment variables
+const nodeEnv = process.env.NODE_ENV || 'development';
+const envPath = path.resolve(process.cwd(), `.env.${nodeEnv}`);
+dotenv.config({ path: envPath });
+
+const MONGO_URI = process.env.MONGO_URI;
+
+const desiredInstruments = [
+  // Crypto
+  { symbol: 'btcusdt', displayName: 'Bitcoin / Tether', type: 'CRYPTO', isEnabled: true, decimalPlaces: 2, minStakeUsd: 10, maxStakeUsd: 1000, defaultPayoutPercent: 85, description: 'Bitcoin is a decentralized digital currency.', baseCurrency: 'BTC', quoteCurrency: 'USDT', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 0, open: '00:00', close: '23:59' }, { dayOfWeek: 1, open: '00:00', close: '23:59' }, { dayOfWeek: 2, open: '00:00', close: '23:59' }, { dayOfWeek: 3, open: '00:00', close: '23:59' }, { dayOfWeek: 4, open: '00:00', close: '23:59' }, { dayOfWeek: 5, open: '00:00', close: '23:59' }, { dayOfWeek: 6, open: '00:00', close: '23:59' } ] } },
+  { symbol: 'ethusdt', displayName: 'Ethereum / Tether', type: 'CRYPTO', isEnabled: true, decimalPlaces: 2, minStakeUsd: 5, maxStakeUsd: 500, defaultPayoutPercent: 85, description: 'Ethereum is a decentralized, open-source blockchain with smart contract functionality.', baseCurrency: 'ETH', quoteCurrency: 'USDT', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 0, open: '00:00', close: '23:59' }, { dayOfWeek: 1, open: '00:00', close: '23:59' }, { dayOfWeek: 2, open: '00:00', close: '23:59' }, { dayOfWeek: 3, open: '00:00', close: '23:59' }, { dayOfWeek: 4, open: '00:00', close: '23:59' }, { dayOfWeek: 5, open: '00:00', close: '23:59' }, { dayOfWeek: 6, open: '00:00', close: '23:59' } ] } },
+  { symbol: 'solusdt', displayName: 'Solana / Tether', type: 'CRYPTO', isEnabled: true, decimalPlaces: 3, minStakeUsd: 5, maxStakeUsd: 500, defaultPayoutPercent: 85, description: 'Solana is a high-performance blockchain.', baseCurrency: 'SOL', quoteCurrency: 'USDT', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 0, open: '00:00', close: '23:59' }, { dayOfWeek: 1, open: '00:00', close: '23:59' }, { dayOfWeek: 2, open: '00:00', close: '23:59' }, { dayOfWeek: 3, open: '00:00', close: '23:59' }, { dayOfWeek: 4, open: '00:00', close: '23:59' }, { dayOfWeek: 5, open: '00:00', close: '23:59' }, { dayOfWeek: 6, open: '00:00', close: '23:59' } ] } },
+  { symbol: 'dogeusdt', displayName: 'Dogecoin / Tether', type: 'CRYPTO', isEnabled: true, decimalPlaces: 6, minStakeUsd: 1, maxStakeUsd: 200, defaultPayoutPercent: 80, description: 'Dogecoin is a cryptocurrency featuring a likeness of the Shiba Inu dog.', baseCurrency: 'DOGE', quoteCurrency: 'USDT', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 0, open: '00:00', close: '23:59' }, { dayOfWeek: 1, open: '00:00', close: '23:59' }, { dayOfWeek: 2, open: '00:00', close: '23:59' }, { dayOfWeek: 3, open: '00:00', close: '23:59' }, { dayOfWeek: 4, open: '00:00', close: '23:59' }, { dayOfWeek: 5, open: '00:00', close: '23:59' }, { dayOfWeek: 6, open: '00:00', close: '23:59' } ] } },
+  { symbol: 'adausdt', displayName: 'Cardano / Tether', type: 'CRYPTO', isEnabled: true, decimalPlaces: 4, minStakeUsd: 2, maxStakeUsd: 300, defaultPayoutPercent: 82, description: 'Cardano is a proof-of-stake blockchain platform.', baseCurrency: 'ADA', quoteCurrency: 'USDT', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 0, open: '00:00', close: '23:59' }, { dayOfWeek: 1, open: '00:00', close: '23:59' }, { dayOfWeek: 2, open: '00:00', close: '23:59' }, { dayOfWeek: 3, open: '00:00', close: '23:59' }, { dayOfWeek: 4, open: '00:00', close: '23:59' }, { dayOfWeek: 5, open: '00:00', close: '23:59' }, { dayOfWeek: 6, open: '00:00', close: '23:59' } ] } },
+  // Custom / Synthetic
+  { symbol: 'sgc', displayName: 'SGCoin / USD', type: 'CRYPTO', isEnabled: true, decimalPlaces: 4, minStakeUsd: 1, maxStakeUsd: 1000, defaultPayoutPercent: 90, description: 'SGCoin Native Token', baseCurrency: 'SGC', quoteCurrency: 'USD', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 0, open: '00:00', close: '23:59' }, { dayOfWeek: 1, open: '00:00', close: '23:59' }, { dayOfWeek: 2, open: '00:00', close: '23:59' }, { dayOfWeek: 3, open: '00:00', close: '23:59' }, { dayOfWeek: 4, open: '00:00', close: '23:59' }, { dayOfWeek: 5, open: '00:00', close: '23:59' }, { dayOfWeek: 6, open: '00:00', close: '23:59' } ] } },
+  // Forex
+  { symbol: 'eur_usd', displayName: 'EUR/USD', type: 'FOREX', isEnabled: true, decimalPlaces: 5, minStakeUsd: 1, maxStakeUsd: 200, defaultPayoutPercent: 90, description: 'The Euro to US Dollar exchange rate.', baseCurrency: 'EUR', quoteCurrency: 'USD', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 0, open: '21:00', close: '23:59' }, { dayOfWeek: 1, open: '00:00', close: '23:59' }, { dayOfWeek: 2, open: '00:00', close: '23:59' }, { dayOfWeek: 3, open: '00:00', close: '23:59' }, { dayOfWeek: 4, open: '00:00', close: '23:59' }, { dayOfWeek: 5, open: '00:00', close: '21:00' } ] } },
+  { symbol: 'gbp_usd', displayName: 'GBP/USD', type: 'FOREX', isEnabled: true, decimalPlaces: 5, minStakeUsd: 1, maxStakeUsd: 200, defaultPayoutPercent: 90, description: 'The Great British Pound to US Dollar exchange rate.', baseCurrency: 'GBP', quoteCurrency: 'USD', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 0, open: '21:00', close: '23:59' }, { dayOfWeek: 1, open: '00:00', close: '23:59' }, { dayOfWeek: 2, open: '00:00', close: '23:59' }, { dayOfWeek: 3, open: '00:00', close: '23:59' }, { dayOfWeek: 4, open: '00:00', close: '23:59' }, { dayOfWeek: 5, open: '00:00', close: '21:00' } ] } },
+  { symbol: 'usd_jpy', displayName: 'USD/JPY', type: 'FOREX', isEnabled: true, decimalPlaces: 3, minStakeUsd: 1, maxStakeUsd: 200, defaultPayoutPercent: 90, description: 'The US Dollar to Japanese Yen exchange rate.', baseCurrency: 'USD', quoteCurrency: 'JPY', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 0, open: '21:00', close: '23:59' }, { dayOfWeek: 1, open: '00:00', close: '23:59' }, { dayOfWeek: 2, open: '00:00', close: '23:59' }, { dayOfWeek: 3, open: '00:00', close: '23:59' }, { dayOfWeek: 4, open: '00:00', close: '23:59' }, { dayOfWeek: 5, open: '00:00', close: '21:00' } ] } },
+  { symbol: 'usd_cad', displayName: 'USD/CAD', type: 'FOREX', isEnabled: true, decimalPlaces: 5, minStakeUsd: 1, maxStakeUsd: 200, defaultPayoutPercent: 88, description: 'The US Dollar to Canadian Dollar exchange rate.', baseCurrency: 'USD', quoteCurrency: 'CAD', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 0, open: '21:00', close: '23:59' }, { dayOfWeek: 1, open: '00:00', close: '23:59' }, { dayOfWeek: 2, open: '00:00', close: '23:59' }, { dayOfWeek: 3, open: '00:00', close: '23:59' }, { dayOfWeek: 4, open: '00:00', close: '23:59' }, { dayOfWeek: 5, open: '00:00', close: '21:00' } ] } },
+  { symbol: 'aud_usd', displayName: 'AUD/USD', type: 'FOREX', isEnabled: true, decimalPlaces: 5, minStakeUsd: 1, maxStakeUsd: 200, defaultPayoutPercent: 88, description: 'The Australian Dollar to US Dollar exchange rate.', baseCurrency: 'AUD', quoteCurrency: 'USD', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 0, open: '21:00', close: '23:59' }, { dayOfWeek: 1, open: '00:00', close: '23:59' }, { dayOfWeek: 2, open: '00:00', close: '23:59' }, { dayOfWeek: 3, open: '00:00', close: '23:59' }, { dayOfWeek: 4, open: '00:00', close: '23:59' }, { dayOfWeek: 5, open: '00:00', close: '21:00' } ] } },
+  // Commodities (Spot via Oanda)
+  { symbol: 'xau_usd', displayName: 'Gold / USD', type: 'FOREX', isEnabled: true, decimalPlaces: 2, minStakeUsd: 10, maxStakeUsd: 1000, defaultPayoutPercent: 85, description: 'Spot Gold to US Dollar.', baseCurrency: 'XAU', quoteCurrency: 'USD', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 0, open: '23:00', close: '23:59' }, { dayOfWeek: 1, open: '00:00', close: '23:59' }, { dayOfWeek: 2, open: '00:00', close: '23:59' }, { dayOfWeek: 3, open: '00:00', close: '23:59' }, { dayOfWeek: 4, open: '00:00', close: '23:59' }, { dayOfWeek: 5, open: '00:00', close: '22:00' } ] } },
+  { symbol: 'xag_usd', displayName: 'Silver / USD', type: 'FOREX', isEnabled: true, decimalPlaces: 3, minStakeUsd: 10, maxStakeUsd: 1000, defaultPayoutPercent: 85, description: 'Spot Silver to US Dollar.', baseCurrency: 'XAG', quoteCurrency: 'USD', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 0, open: '23:00', close: '23:59' }, { dayOfWeek: 1, open: '00:00', close: '23:59' }, { dayOfWeek: 2, open: '00:00', close: '23:59' }, { dayOfWeek: 3, open: '00:00', close: '23:59' }, { dayOfWeek: 4, open: '00:00', close: '23:59' }, { dayOfWeek: 5, open: '00:00', close: '22:00' } ] } },
+  // Stocks & Commodities (ETFs)
+  { symbol: 'aapl', displayName: 'Apple Inc.', type: 'STOCK', isEnabled: true, decimalPlaces: 2, minStakeUsd: 10, maxStakeUsd: 1000, defaultPayoutPercent: 80, description: 'Apple Inc. designs, manufactures, and markets smartphones, personal computers, tablets, wearables, and accessories.', baseCurrency: 'USD', quoteCurrency: 'USD', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 1, open: '13:30', close: '20:00' }, { dayOfWeek: 2, open: '13:30', close: '20:00' }, { dayOfWeek: 3, open: '13:30', close: '20:00' }, { dayOfWeek: 4, open: '13:30', close: '20:00' }, { dayOfWeek: 5, open: '13:30', close: '20:00' } ] } },
+  { symbol: 'tsla', displayName: 'Tesla Inc.', type: 'STOCK', isEnabled: true, decimalPlaces: 2, minStakeUsd: 10, maxStakeUsd: 1000, defaultPayoutPercent: 80, description: 'Tesla, Inc. designs, develops, manufactures, leases, and sells electric vehicles, and energy generation and storage systems.', baseCurrency: 'USD', quoteCurrency: 'USD', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 1, open: '13:30', close: '20:00' }, { dayOfWeek: 2, open: '13:30', close: '20:00' }, { dayOfWeek: 3, open: '13:30', close: '20:00' }, { dayOfWeek: 4, open: '13:30', close: '20:00' }, { dayOfWeek: 5, open: '13:30', close: '20:00' } ] } },
+  { symbol: 'gld', displayName: 'SPDR Gold Shares', type: 'STOCK', isEnabled: true, decimalPlaces: 2, minStakeUsd: 10, maxStakeUsd: 1000, defaultPayoutPercent: 80, description: 'SPDR Gold Trust is an investment trust that holds gold bars.', baseCurrency: 'USD', quoteCurrency: 'USD', tradingHours: { timezone: 'UTC', sessions: [ { dayOfWeek: 1, open: '13:30', close: '20:00' }, { dayOfWeek: 2, open: '13:30', close: '20:00' }, { dayOfWeek: 3, open: '13:30', close: '20:00' }, { dayOfWeek: 4, open: '13:30', close: '20:00' }, { dayOfWeek: 5, open: '13:30', close: '20:00' } ] } },
+];
+
+const runUpdate = async () => {
+  if (!MONGO_URI) {
+    logger.error('MONGO_URI is not defined in environment variables.');
+    process.exit(1);
+  }
+
+  try {
+    logger.info('Connecting to MongoDB...');
+    await mongoose.connect(MONGO_URI);
+    logger.info('MongoDB connected.');
+
+    // 1. Upsert all desired instruments
+    for (const instrumentData of desiredInstruments) {
+      await Instrument.updateOne(
+        { symbol: instrumentData.symbol },
+        { $set: instrumentData },
+        { upsert: true }
+      );
+    }
+    logger.info(`Upserted ${desiredInstruments.length} instruments.`);
+
+    // 2. Remove any instruments that are not in our desired list
+    const desiredSymbols = desiredInstruments.map(i => i.symbol);
+    const deleteResult = await Instrument.deleteMany({ symbol: { $nin: desiredSymbols } });
+    if (deleteResult.deletedCount > 0) {
+      logger.info(`Removed ${deleteResult.deletedCount} obsolete instruments.`);
+    }
+
+    logger.info('Instrument collection is now in sync.');
+
+  } catch (error) {
+    logger.error({ err: error }, 'Failed to update instruments');
+    process.exit(1);
+  } finally {
+    if (mongoose.connection.readyState === 1) {
+      await mongoose.connection.close();
+      logger.info('MongoDB connection closed.');
+    }
+  }
+};
+
+runUpdate();

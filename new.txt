@@ -1,0 +1,280 @@
+Nice, this is a good “blocker” to unblock properly now.
+
+I’ll do 3 things:
+
+1. **Give a clear decision** (which provider to use *now*).
+2. **Explain why** (cost / speed / reliability trade-off).
+3. **Give your backend team a concrete integration plan** with links + interface design so they can start coding immediately.
+
+---
+
+## 1. Decision: Use **Finnhub** as v1 Market Data Provider
+
+For this first version, I’d go with **Finnhub** as the primary external provider.
+
+**Why Finnhub?**
+
+* **Multi-asset**: stocks, forex, and crypto in one API. ([Finnhub][1])
+* **Generous free tier** for early stage / testing:
+
+  * Docs mention **60 API calls/minute** on free plan, with separate higher limits for market data calls. ([Finnhub][2])
+* **Realtime data** (REST + WebSocket on paid tiers). ([Finnhub][1])
+* **Good docs** and SDKs – easy for the team to get started. ([Finnhub][1])
+
+So:
+
+> **Official choice for now:** Finnhub
+> **Fallback later:** add abstraction so we can plug in Twelve Data / Polygon etc. if we outgrow Finnhub or need a different license.
+
+### Docs to give your team
+
+* Finnhub docs:
+  **[https://finnhub.io/docs/api](https://finnhub.io/docs/api)** ([Finnhub][1])
+* Pricing & limits (free vs paid):
+  **[https://finnhub.io/pricing](https://finnhub.io/pricing)** and the rate-limit page. ([Finnhub][3])
+
+Tell them: *“Use Finnhub for v1. Design the MarketData module behind an interface so we can switch providers later without touching trading logic.”*
+
+---
+
+## 2. How the backend should think about this
+
+### 2.1 Abstract interface (so provider is swappable)
+
+In your Node/TS backend, define a **generic interface**:
+
+```ts
+// src/modules/market/market.types.ts
+export interface MarketTick {
+  symbol: string;         // e.g. 'BTCUSDT'
+  bid: number | null;
+  ask: number | null;
+  last: number;
+  ts: number;             // ms since epoch
+}
+
+export interface MarketDataProvider {
+  getLatestTick(symbol: string): Promise<MarketTick | null>;
+  getBulkTicks(symbols: string[]): Promise<MarketTick[]>;
+  // later: subscribe(streamCb), getCandles(), etc.
+}
+```
+
+Then have a **Finnhub implementation**:
+
+```ts
+// src/modules/market/finnhub.provider.ts
+import { MarketDataProvider, MarketTick } from './market.types';
+import axios from 'axios';
+
+export class FinnhubProvider implements MarketDataProvider {
+  private apiKey: string;
+  private baseUrl = 'https://finnhub.io/api/v1';
+
+  constructor(apiKey: string) {
+    this.apiKey = apiKey;
+  }
+
+  async getLatestTick(symbol: string): Promise<MarketTick | null> {
+    // Example: call Finnhub quote endpoint for stocks/forex/crypto
+    // Exact endpoint choice depends on asset type; check docs.
+    const url = `${this.baseUrl}/quote`;
+    const res = await axios.get(url, {
+      params: {
+        symbol,
+        token: this.apiKey,
+      },
+    });
+
+    const data = res.data; // check docs for exact shape
+
+    // Map response → MarketTick
+    const now = Date.now();
+    const tick: MarketTick = {
+      symbol,
+      bid: null,           // if endpoint does not give bid/ask, leave null
+      ask: null,
+      last: data.c,        // current price / last trade price
+      ts: (data.t ?? now) * 1000, // if Finnhub returns seconds
+    };
+
+    return tick;
+  }
+
+  async getBulkTicks(symbols: string[]): Promise<MarketTick[]> {
+    // naive v1: just parallelize getLatestTick (watch rate limits!)
+    return Promise.all(symbols.map((s) => this.getLatestTick(s))) as Promise<MarketTick[]>;
+  }
+}
+```
+
+> **Important:** The devs must open Finnhub docs and pick the exact endpoints depending on your asset mix:
+>
+> * For **crypto**: Crypto endpoints
+> * For **forex**: FX endpoints
+> * For **indices/stocks**: stock quote endpoints
+
+But the **Trading Engine** will only see the generic `MarketDataProvider` + `MarketTick`, not Finnhub directly.
+
+---
+
+## 3. How to make it *fast & cheap* with Finnhub
+
+### 3.1 Strategy
+
+You **don’t** want every trade to hit Finnhub directly. That’s slow and wastes API calls.
+
+Instead:
+
+1. A **Market Data Worker** hits Finnhub at a fixed frequency (e.g. every 500–1000 ms for a small list of symbols).
+2. It stores the latest ticks in **Redis**.
+3. Both:
+
+   * Trading Engine (for settlement and trade entry)
+   * Frontend/API
+     read **only from Redis** on hot paths.
+
+So the backend team should implement:
+
+* `FinnhubProvider` → talks to Finnhub.
+* `MarketCacheService` → wraps Redis.
+
+```ts
+// src/modules/market/marketCache.service.ts
+import { MarketTick } from './market.types';
+import { redis } from '../../config/redis';
+
+const MARKET_TICK_KEY = (symbol: string) => `price:${symbol}`;
+
+export class MarketCacheService {
+  async setTick(tick: MarketTick): Promise<void> {
+    await redis.set(MARKET_TICK_KEY(tick.symbol), JSON.stringify(tick), {
+      EX: 10, // TTL 10s (refreshed constantly anyway)
+    });
+  }
+
+  async getTick(symbol: string): Promise<MarketTick | null> {
+    const raw = await redis.get(MARKET_TICK_KEY(symbol));
+    return raw ? (JSON.parse(raw) as MarketTick) : null;
+  }
+
+  async getTicks(symbols: string[]): Promise<MarketTick[]> {
+    const keys = symbols.map(MARKET_TICK_KEY);
+    const res = await redis.mGet(keys);
+    return res
+      .map((raw, idx) =>
+        raw ? (JSON.parse(raw) as MarketTick) : null
+      )
+      .filter(Boolean) as MarketTick[];
+  }
+}
+```
+
+### 3.2 BullMQ worker for ingestion
+
+Create a **BullMQ repeatable job**:
+
+```ts
+// src/modules/market/workers/marketIngest.worker.ts
+import { Queue, Worker, JobsOptions } from 'bullmq';
+import { FinnhubProvider } from '../finnhub.provider';
+import { MarketCacheService } from '../marketCache.service';
+
+const SYMBOLS = ['BINANCE:BTCUSDT', 'BINANCE:ETHUSDT']; // example, confirm exact Finnhub symbols
+
+export const marketIngestQueue = new Queue('market:ingest', {
+  connection: { host: process.env.REDIS_HOST, port: 6379 },
+});
+
+export const startMarketIngestWorker = () => {
+  const provider = new FinnhubProvider(process.env.FINNHUB_API_KEY!);
+  const cache = new MarketCacheService();
+
+  // Worker to process jobs - in this case we only need 1 repeating job
+  new Worker(
+    'market:ingest',
+    async () => {
+      const ticks = await provider.getBulkTicks(SYMBOLS);
+      for (const tick of ticks) {
+        await cache.setTick(tick);
+      }
+    },
+    {
+      connection: { host: process.env.REDIS_HOST, port: 6379 },
+    }
+  );
+};
+
+// Somewhere in app bootstrap:
+const repeatOptions: JobsOptions = { repeat: { every: 1000 } }; // every 1s
+marketIngestQueue.add('ingest', {}, repeatOptions);
+```
+
+* This uses **1 Finnhub call per symbol per second** (for small SYMBOLS list, it’s fine).
+* All Trading/Frontend reads are **Redis-only**, which is super fast.
+
+Later you can optimize:
+
+* Use Finnhub **WebSocket** for real streaming (on a paid tier).
+* Use Finnhub’s bulk endpoints to fetch multiple symbols per call if available.
+
+---
+
+## 4. How Trading Engine uses this
+
+Anywhere you need a price:
+
+```ts
+// src/modules/trading/trading.service.ts
+import { MarketCacheService } from '../market/marketCache.service';
+
+export class TradingService {
+  private marketCache = new MarketCacheService();
+
+  async openTrade(params: OpenTradeDto): Promise<Trade> {
+    const tick = await this.marketCache.getTick(params.symbol);
+    if (!tick) {
+      throw new Error('No market price available, please try again');
+    }
+
+    const entryPrice = tick.last;
+
+    // use entryPrice in trade creation as per previous docs:
+    // - validate wallet
+    // - create Trade doc
+    // - enqueue settlement job
+    // ...
+  }
+
+  async settleTrade(tradeId: string) {
+    const trade = await this.tradeModel.findById(tradeId);
+    const tick = await this.marketCache.getTick(trade.instrumentSymbol);
+
+    if (!tick) {
+      // fallback: call provider directly once
+      const provider = new FinnhubProvider(process.env.FINNHUB_API_KEY!);
+      const fresh = await provider.getLatestTick(trade.instrumentSymbol);
+      // ...
+    }
+
+    const exitPrice = tick!.last;
+    // apply win/loss logic…
+  }
+}
+```
+
+Key point: **Trading logic doesn’t know about Finnhub at all**. It only talks to `MarketCacheService`.
+
+---
+
+## 5. What you can literally tell the backend team now
+
+You can paste something like this to your team:
+
+> **Provider:** Use **Finnhub** as the v1 market data provider (`https://finnhub.io/docs/api`).
+>
+> * Implement a `MarketDataProvider` interface and a `FinnhubProvider` class that wraps their REST API.
+> * Build a BullMQ worker (`market:ingest`) that fetches a small list of symbols (BTCUSDT, ETHUSDT, etc.) every 1s and caches them in Redis under `price:{symbol}`.
+> * Trading engine and REST APIs must **never call Finnhub directly**; they only read from Redis via `MarketCacheService`.
+> * Keep the provider swappable (later we can plug in Twelve Data / Polygon without touching trading logic).
+
