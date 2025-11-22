@@ -1,5 +1,5 @@
 import express from 'express';
-import { createScenario, getScenarios, deleteScenario } from './admin.controller';
+import { createScenario, getScenarios, deleteScenario, getSystemHealth, toggleInstrument, testConnection, testAll } from './admin.controller';
 import { validate } from '../../common/utils/validator';
 import { authMiddleware } from '../../common/middleware/authMiddleware'; // Assuming admins are authenticated users
 import { z } from 'zod';
@@ -33,10 +33,31 @@ const deleteScenarioSchema = z.object({
   }),
 });
 
+const toggleInstrumentSchema = z.object({
+  params: z.object({
+    symbol: z.string(),
+  }),
+  body: z.object({
+    isEnabled: z.boolean(),
+  }),
+});
+
+const testConnectionSchema = z.object({
+  params: z.object({
+    symbol: z.string(),
+  }),
+});
+
 router.use(authMiddleware);
 
 router.post('/scenarios', validate(createScenarioSchema), createScenario);
 router.get('/scenarios', validate(getScenariosSchema), getScenarios);
 router.delete('/scenarios/:id', validate(deleteScenarioSchema), deleteScenario);
+
+// System Health & Management
+router.get('/system-health', getSystemHealth);
+router.post('/system-health/test-all', testAll);
+router.patch('/instruments/:symbol/toggle', validate(toggleInstrumentSchema), toggleInstrument);
+router.post('/instruments/:symbol/test-connection', validate(testConnectionSchema), testConnection);
 
 export default router;

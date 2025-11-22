@@ -69,4 +69,19 @@ export class BinanceProvider {
       return [];
     }
   }
+
+  async getLatestPrice(symbol: string): Promise<number | null> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/ticker/price`, {
+        params: { symbol: symbol.toUpperCase() }
+      });
+      if (response.data && response.data.price) {
+          return parseFloat(response.data.price);
+      }
+      return null;
+    } catch (error) {
+      logger.warn({ err: error, symbol }, 'Error fetching latest price from Binance');
+      return null;
+    }
+  }
 }

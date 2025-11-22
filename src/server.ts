@@ -12,10 +12,15 @@ import { startSyntheticMarketWorker } from './modules/market/workers/syntheticMa
 import { startBotRunnerWorker } from './modules/bots/workers/botRunner.worker';
 import { startBinanceWsWorker } from './modules/market/workers/binance.ws.worker';
 import { startOandaWsWorker } from './modules/market/workers/oanda.ws.worker';
-import { startTwelveDataWsWorker } from './modules/market/workers/twelveData.ws.worker';
+import { startAlpacaWsWorker } from './modules/market/workers/alpaca.ws.worker';
 import { recoverStuckTrades } from './modules/trading/workers/recovery.worker';
+import { startGapFillerWorker } from './modules/market/workers/gapFiller.worker';
 import { seedDatabase } from './config/seeder';
 import { initSocketServer } from './ws/socketServer';
+import redisClient from './config/redis'; // Import redisClient
+import { BINANCE_SYMBOLS } from './modules/market/market.config'; // Import BINANCE_SYMBOLS
+
+const CONTROL_CHANNEL = 'market-control-channel';
 
 const startServer = async () => {
   try {
@@ -33,21 +38,22 @@ const startServer = async () => {
     // Start WebSocket Workers for Real-time Data
     startBinanceWsWorker();
     startOandaWsWorker();
-    startTwelveDataWsWorker();
+    startAlpacaWsWorker();
+
+    // Initial subscription for Binance symbols (if not handled by another mechanism)
+    logger.info('Publishing initial Binance symbol subscriptions...');
+    for (const symbol of BINANCE_SYMBOLS) {
+      await redisClient.publish(CONTROL_CHANNEL, JSON.stringify({ action: 'subscribe', symbol }));
+    }
 
     // Attempt to recover any trades stuck during downtime
     await recoverStuckTrades();
+    
+    // Start Gap Filler (Runs on startup + periodically)
+    startGapFillerWorker();
 
     // Add a repeatable job to the queue for polling non-crypto assets
-    /* Disabled as we are not polling for stocks
-    await marketIngestQueue.add('ingest-market-data', {}, {
-      repeat: {
-        every: 10000, // every 10 seconds
-      },
-      removeOnComplete: true,
-      removeOnFail: true,
-    });
-    */
+
 
     const server = http.createServer(app);
     initSocketServer(server);

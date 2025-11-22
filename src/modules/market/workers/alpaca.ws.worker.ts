@@ -3,18 +3,22 @@ import axios from 'axios';
 import { config } from '../../../config/config';
 import logger from '../../../common/utils/logger';
 import redisClient from '../../../config/redis';
+import { CandleService } from '../candle.service';
 
-const STOCK_SYMBOLS = ['AAPL', 'TSLA', 'GLD'];
-const CRYPTO_SYMBOLS = ['BTC/USD']; // Using a crypto symbol for 24/7 testing
+// Expanded list of popular US Stocks & ETFs
+const STOCK_SYMBOLS = [
+    'AAPL', 'TSLA', 'GLD', 'NVDA', 'AMD', 
+    'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX', 
+    'SPY', 'QQQ', 'V', 'JPM'
+];
+
 const PRICE_KEY = (symbol: string) => `price:ALPACA:${symbol.toLowerCase()}`;
+
+const candleService = new CandleService();
 
 const primeCacheWithLatestTrade = async (symbol: string) => {
   try {
-    const isCrypto = symbol.includes('/');
-    // Corrected endpoints based on latest Alpaca API docs
-    const endpoint = isCrypto ? '/v1beta3/crypto/us/latest/trades' : '/v2/stocks/trades/latest';
-    
-    // Ensure no double slashes if dataApiUrl has trailing slash
+    const endpoint = '/v2/stocks/trades/latest';
     const baseUrl = config.alpaca.dataApiUrl.replace(/\/$/, '');
     const url = `${baseUrl}${endpoint}`;
 
@@ -25,13 +29,9 @@ const primeCacheWithLatestTrade = async (symbol: string) => {
     const params = { symbols: symbol };
 
     const response = await axios.get(url, { headers, params });
-    
-    // Stocks API returns { trades: { "AAPL": { ... } } }
-    // Crypto API returns { trades: { "BTC/USD": { ... } } }
-    const tradeData = response.data.trades || response.data.latestTrades; 
+    const tradeData = response.data.trades; 
     
     if (!tradeData) {
-        logger.warn({ symbol, data: response.data }, 'No trade data structure found in Alpaca response');
         return;
     }
 
@@ -39,44 +39,33 @@ const primeCacheWithLatestTrade = async (symbol: string) => {
 
     if (trade) {
       const tick = {
-        symbol: (trade.S || symbol).toLowerCase(), // Use original symbol for crypto
-        last: isCrypto ? parseFloat(trade.p) : trade.p, // Price is 'p' (string) for crypto, 'p' (number) for stocks
-        ts: new Date(trade.t).getTime(), // Timestamp is 't'
+        symbol: symbol.toLowerCase(),
+        last: trade.p, 
+        ts: new Date(trade.t).getTime(),
       };
       await redisClient.set(PRICE_KEY(tick.symbol), JSON.stringify(tick));
-      // Publish to ticks channel for real-time frontend updates
       await redisClient.publish('market-ticks-channel', JSON.stringify(tick));
-      logger.info({ symbol: tick.symbol, price: tick.last }, `Primed Redis with latest trade for ${tick.symbol}`);
-    } else {
-        logger.warn({ symbol, tradeData }, 'Symbol not found in Alpaca trade response');
+      logger.info({ symbol: tick.symbol, price: tick.last }, `Primed Redis with latest trade`);
     }
   } catch (error) {
-     // log the full error response if available to debug 404s or other issues
      if (axios.isAxiosError(error) && error.response) {
-         logger.error({ status: error.response.status, data: error.response.data, url: error.config?.url }, `Failed to prime cache for ${symbol}`);
+         logger.error({ status: error.response.status, url: error.config?.url }, `Failed to prime cache for ${symbol}`);
      } else {
          logger.error({ err: error, symbol }, `Failed to prime cache for ${symbol}`);
      }
   }
 };
 
-// Generic connection function for any Alpaca WebSocket
-const connect = (streamType: 'stocks' | 'crypto') => {
-  const symbols = streamType === 'stocks' ? STOCK_SYMBOLS : CRYPTO_SYMBOLS;
-  
-  let url = config.alpaca.dataWsUrl;
-  if (streamType === 'crypto') {
-      // Hardcode the correct crypto stream URL as the pattern /v2/crypto is incorrect (404)
-      // The correct endpoint for Alpaca Crypto stream is v1beta3/crypto/us
-      url = 'wss://stream.data.alpaca.markets/v1beta3/crypto/us';
-  }
+const connect = () => {
+  // Alpaca IEX (Free) Data Stream
+  const url = config.alpaca.dataWsUrl; 
 
-  logger.info({ url, symbols }, `Connecting to Alpaca ${streamType} WebSocket`);
+  logger.info({ url, symbols: STOCK_SYMBOLS.length }, `Connecting to Alpaca Stocks WebSocket`);
 
   const ws = new WebSocket(url);
 
   ws.on('open', () => {
-    logger.info(`Alpaca ${streamType} WS connected, authenticating...`);
+    logger.info(`Alpaca Stocks WS connected, authenticating...`);
     ws.send(JSON.stringify({
       action: 'auth',
       key: config.alpaca.apiKeyId,
@@ -89,41 +78,59 @@ const connect = (streamType: 'stocks' | 'crypto') => {
       const messages = JSON.parse(raw.toString());
       for (const msg of messages) {
         if (msg.T === 'success' && msg.msg === 'authenticated') {
-          logger.info(`Alpaca ${streamType} WS authenticated, subscribing and priming cache...`);
-          for (const symbol of symbols) {
+          logger.info(`Alpaca Stocks WS authenticated. Subscribing to ${STOCK_SYMBOLS.length} symbols...`);
+          
+          // Prime cache first
+          for (const symbol of STOCK_SYMBOLS) {
             await primeCacheWithLatestTrade(symbol);
           }
-          ws.send(JSON.stringify({ action: 'subscribe', trades: symbols }));
-        } else if (msg.T === 't' || msg.T === 'b') { // 't' for stock trades, 'b' for crypto trades
+          
+          ws.send(JSON.stringify({ action: 'subscribe', trades: STOCK_SYMBOLS }));
+
+        } else if (msg.T === 't') { // 't' = Trade
           const symbol = msg.S.toLowerCase();
-          const price = parseFloat(msg.p); // Price is 'p' for crypto, 'P' for stocks
+          const price = msg.p; 
+          const volume = msg.s || 1; // 's' is size (volume)
           const ts = new Date(msg.t).getTime();
+          
           const tick = { symbol, last: price, ts };
+          
+          // 1. Redis Cache
           redisClient.set(PRICE_KEY(symbol), JSON.stringify(tick));
+          
+          // 2. PubSub for Frontend
           redisClient.publish('market-ticks-channel', JSON.stringify(tick));
+
+          // 3. Persist Candle History (Self-Built)
+          candleService.updateCandle(symbol.toUpperCase(), price, volume)
+            .catch(err => logger.error({ err, symbol }, 'Failed to update Alpaca candle'));
+
         } else if (msg.T === 'error') {
-          logger.error({ error: msg, stream: streamType }, 'Alpaca WS error message');
+          logger.error({ error: msg }, 'Alpaca WS error message');
         } else if (msg.T === 'subscription') {
-          logger.info({ subscriptions: msg.trades, stream: streamType }, 'Alpaca WS subscription confirmed');
+          logger.info({ count: msg.trades.length }, 'Alpaca WS subscription confirmed');
         }
       }
     } catch (err) {
-      logger.error({ err, raw: raw.toString(), stream: streamType }, 'Error processing Alpaca WS message');
+      logger.error({ err, raw: raw.toString() }, 'Error processing Alpaca WS message');
     }
   });
 
   ws.on('close', (code, reason) => {
-    logger.warn({ code, reason: reason.toString(), stream: streamType }, `Alpaca ${streamType} WS closed, reconnecting...`);
-    setTimeout(() => connect(streamType), 3000);
+    logger.warn({ code, reason: reason.toString() }, `Alpaca Stocks WS closed, reconnecting...`);
+    setTimeout(() => connect(), 3000);
   });
 
   ws.on('error', (err) => {
-    logger.error({ err, stream: streamType }, `Alpaca ${streamType} WS error`);
+    logger.error({ err }, `Alpaca Stocks WS error`);
     ws.close();
   });
 };
 
 export const startAlpacaWsWorker = () => {
-  connect('stocks');
-  connect('crypto');
+  if (!config.alpaca.apiKeyId || !config.alpaca.secretKey) {
+      logger.warn('Alpaca API Keys missing. Stocks worker NOT starting.');
+      return;
+  }
+  connect();
 };

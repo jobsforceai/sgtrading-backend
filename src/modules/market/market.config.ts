@@ -2,10 +2,18 @@
 export const BINANCE_SYMBOLS = [
   'btcusdt',
   'ethusdt',
-  // We can add more symbols here later
+  'solusdt', 'xrpusdt', 'adausdt', 'dogeusdt', 'dotusdt', 'maticusdt', 
+  'ltcusdt', 'linkusdt', 'bchusdt', 'xlmusdt', 'uniusdt', 'avaxusdt', 
+  'etcusdt', 'filusdt', 'aaveusdt', 'algousdt', 'egldusdt', 'sandusdt', 
+  'axsusdt', 'manausdt', 'thetausdt', 'vetusdt', 'icpusdt', 'trxusdt', 
+  'eosusdt', 'xtzusdt', 'mkrusdt', 'neousdt'
 ];
 
-export const STOCK_SYMBOLS = ['aapl', 'tsla', 'gld']; // Stock/ETF symbols
+export const STOCK_SYMBOLS = [
+  'aapl', 'tsla', 'gld', 
+  'nvda', 'amd', 'msft', 'googl', 'amzn', 
+  'meta', 'nflx', 'spy', 'qqq', 'v', 'jpm'
+]; // Stock/ETF symbols
 
 export const SYNTHETIC_SYMBOLS = ['sgc']; // Our internal tokens
 

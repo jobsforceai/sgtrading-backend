@@ -41,7 +41,14 @@ export class YahooProvider {
 
     try {
       logger.info({ symbol, queryOptions }, 'Fetching chart data from Yahoo Finance');
-      const result = await yahooFinance.chart(symbol, queryOptions);
+      
+      // Wrap in 5s timeout
+      const timeout = (ms: number) => new Promise<any>((_, reject) => setTimeout(() => reject(new Error('Yahoo Finance Timeout')), ms));
+      
+      const result: any = await Promise.race([
+        yahooFinance.chart(symbol, queryOptions),
+        timeout(5000)
+      ]);
 
       if (!result || !result.quotes || result.quotes.length === 0) {
         logger.warn({ symbol, result }, 'Yahoo Finance returned empty quotes');
@@ -50,7 +57,7 @@ export class YahooProvider {
       
       logger.info({ symbol, count: result.quotes.length }, 'Yahoo Finance fetch successful');
 
-      return result.quotes.map((q) => ({
+      return result.quotes.map((q: any) => ({
         time: q.date.getTime() / 1000,
         open: q.open,
         high: q.high,

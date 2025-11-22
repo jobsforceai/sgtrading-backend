@@ -53,6 +53,20 @@ export const getQuote = async (symbol: string) => {
   return marketCache.getTick(symbol.toLowerCase());
 };
 
+export const fetchCurrentPrice = async (symbol: string): Promise<number | null> => {
+  // 1. Try Cache
+  const tick = await marketCache.getTick(symbol.toLowerCase());
+  if (tick) return tick.last;
+
+  // 2. Try REST Provider
+  if (isCrypto(symbol)) {
+      return await binanceProvider.getLatestPrice(symbol);
+  }
+  
+  // Fallback for others if needed (e.g. Yahoo) in future
+  return null;
+};
+
 export const getCandles = async (symbol: string, resolution: string, from: number, to: number) => {
   const cacheKey = `candles:${symbol}:${resolution}:${from}:${to}`;
   logger.info({ symbol, resolution, cacheKey }, 'Checking cache for candles');
@@ -60,57 +74,81 @@ export const getCandles = async (symbol: string, resolution: string, from: numbe
   try {
     const cached = await redisClient.get(cacheKey);
     if (cached) {
-      logger.info({ symbol, cacheKey }, 'Serving candles from cache (HIT)');
       return JSON.parse(cached);
-    } else {
-      logger.info({ symbol, cacheKey }, 'Cache MISS');
     }
   } catch (err) {
     logger.warn({ err }, 'Redis cache get failed for candles');
   }
 
-  let candles: any[] = [];
+  let apiCandles: any[] = [];
 
-  // 1. Synthetic Symbols
-  if (SYNTHETIC_SYMBOLS.includes(symbol.toLowerCase())) {
-    logger.info({ symbol }, 'Fetching candles from local DB (Synthetic)');
-    candles = await candleService.getCandles(symbol, resolution, from, to);
-  } 
-  // 2. Crypto Symbols -> Prioritize Binance
-  else if (isCrypto(symbol)) {
-      logger.info({ symbol }, 'Fetching candles from Binance (Crypto)');
-      candles = await binanceProvider.getCandles(symbol, resolution, from, to);
-      
-      if (candles.length === 0) {
-          logger.warn({ symbol }, 'Binance returned no data. Falling back to Yahoo...');
+  // 1. Fetch from External Providers (unless Synthetic)
+  if (!SYNTHETIC_SYMBOLS.includes(symbol.toLowerCase())) {
+      if (isCrypto(symbol)) {
+          apiCandles = await binanceProvider.getCandles(symbol, resolution, from, to);
+          if (apiCandles.length === 0) {
+              const yahooSymbol = toYahooSymbol(symbol);
+              const fromDate = new Date(from * 1000);
+              const toDate = new Date(to * 1000);
+              apiCandles = await yahooProvider.getCandles(yahooSymbol, resolution, fromDate, toDate);
+          }
+      } else {
           const yahooSymbol = toYahooSymbol(symbol);
           const fromDate = new Date(from * 1000);
           const toDate = new Date(to * 1000);
-          candles = await yahooProvider.getCandles(yahooSymbol, resolution, fromDate, toDate);
+          apiCandles = await yahooProvider.getCandles(yahooSymbol, resolution, fromDate, toDate);
       }
   }
-  // 3. Other Assets -> Yahoo Finance
-  else {
-    const yahooSymbol = toYahooSymbol(symbol);
-    logger.info({ internalSymbol: symbol, yahooSymbol }, 'Fetching candles from Yahoo Finance');
 
-    const fromDate = new Date(from * 1000);
-    const toDate = new Date(to * 1000);
-    
-    candles = await yahooProvider.getCandles(yahooSymbol, resolution, fromDate, toDate);
+  // 2. Fetch from Local DB (Gap Filler + Live Persistence + Synthetics)
+  const dbCandles = await candleService.getCandles(symbol, resolution, from, to);
+
+  // 3. Merge and Heal (API Overrides Synthetic DB)
+  const candleMap = new Map<number, any>();
+  const realCandlesToPersist: any[] = [];
+
+  // Initialize with DB candles
+  dbCandles.forEach((c: any) => candleMap.set(c.time, c));
+
+  // Iterate API candles to merge and check for overrides
+  apiCandles.forEach(apiCandle => {
+    const dbCandle = candleMap.get(apiCandle.time);
+
+    if (!dbCandle) {
+      // New real data, just add it
+      candleMap.set(apiCandle.time, apiCandle);
+    } else if (dbCandle.isSynthetic) {
+      // Synthetic data exists, but we found real data. Overwrite it!
+      candleMap.set(apiCandle.time, apiCandle);
+      // Only persist if resolution is 1m to avoid overwriting aggregated buckets with single points incorrectly
+      // or if we handle aggregation persistence. 
+      // Since persistRealCandles assumes 1m data (time * 1000), we should be careful.
+      // However, API candles are returned in the requested resolution.
+      // If resolution is '1m', we can persist safely.
+      // If resolution is '1h', we shouldn't probably upsert a 1h candle as a 1m candle.
+      if (resolution === '1' || resolution === '1m') {
+          realCandlesToPersist.push(apiCandle);
+      }
+    } 
+    // else: dbCandle is real (isSynthetic: false), keep it (trust local source of truth)
+  });
+
+  // If we found real data that should replace synthetic data, trigger persistence
+  if (realCandlesToPersist.length > 0) {
+      // Fire and forget
+      candleService.persistRealCandles(symbol, realCandlesToPersist).catch(err => logger.error({ err }, 'Failed to persist real candles during merge'));
   }
 
+  const mergedCandles = Array.from(candleMap.values()).sort((a, b) => a.time - b.time);
+
   // Cache the result
-  if (candles.length > 0) {
+  if (mergedCandles.length > 0) {
     try {
-      await redisClient.set(cacheKey, JSON.stringify(candles), { EX: 60 }); // Cache for 60 seconds
-      logger.info({ cacheKey }, 'Cached candles result');
+      await redisClient.set(cacheKey, JSON.stringify(mergedCandles), { EX: 60 }); 
     } catch (err) {
       logger.warn({ err }, 'Redis cache set failed for candles');
     }
-  } else {
-      logger.warn({ symbol }, 'No candles found from any provider');
   }
 
-  return candles;
+  return mergedCandles;
 };

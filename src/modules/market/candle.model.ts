@@ -9,17 +9,19 @@ export interface ICandle extends Document {
   low: number;
   close: number;
   volume: number;
+  isSynthetic: boolean;
 }
 
 const candleSchema = new Schema<ICandle>({
-  symbol: { type: String, required: true, index: true },
-  resolution: { type: String, required: true },
-  time: { type: Date, required: true, index: true },
+  symbol: { type: String, required: true, uppercase: true },
+  resolution: { type: String, required: true }, // '1m', '5m', '1h', '1d'
+  time: { type: Date, required: true }, // Start time of the candle
   open: { type: Number, required: true },
   high: { type: Number, required: true },
   low: { type: Number, required: true },
   close: { type: Number, required: true },
-  volume: { type: Number, default: 0 },
+  volume: { type: Number, required: true },
+  isSynthetic: { type: Boolean, default: false },
 }, {
   timestamps: true,
 });

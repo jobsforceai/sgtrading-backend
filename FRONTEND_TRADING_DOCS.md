@@ -156,3 +156,44 @@ Users should only see trades relevant to their current context.
 - [ ] **Trade**: `POST` payload sends the correct `mode`.
 - [ ] **Lists**: Open/History lists filter by the correct `mode`.
 - [ ] **Results**: Use `payoutAmount` from API response for result modals instead of calculating it client-side.
+
+## 8. Asset Categorization
+
+The platform supports multiple asset classes. You should display them in separate tabs or sections (e.g., "Crypto", "Forex", "Stocks", "Commodities").
+
+### API Logic
+1.  Fetch all instruments: `GET /api/v1/market/instruments`
+2.  Filter the list client-side using the `type` field.
+
+### Supported Types
+| Type Enum | Display Name | Examples |
+| :--- | :--- | :--- |
+| `CRYPTO` | Cryptocurrency | BTC, ETH, XRP, SOL |
+| `FOREX` | Forex | EUR/USD, GBP/JPY |
+| `STOCK` | Stocks | AAPL, TSLA, NVDA |
+| `COMMODITY` | Commodities | Gold (XAU), Silver (XAG), Oil (WTI) |
+| `INDEX` | Indices | S&P 500 (Reserved for future) |
+
+### Example Filter (JS)
+```javascript
+const instruments = await fetchInstruments();
+const cryptoAssets = instruments.filter(i => i.type === 'CRYPTO');
+const forexAssets = instruments.filter(i => i.type === 'FOREX');
+const stockAssets = instruments.filter(i => i.type === 'STOCK');
+const commodityAssets = instruments.filter(i => i.type === 'COMMODITY');
+```
+
+## 9. Handling Disabled Assets
+
+Admins can disable assets in real-time (e.g., during maintenance or data outages).
+
+**Behavior:**
+*   The disabled asset will **disappear** from the `GET /api/v1/market/instruments` response immediately.
+*   Existing trades for that asset will continue to settle normally.
+
+**Frontend Recommendations:**
+1.  **Refresh List:** Re-fetch the instruments list periodically (e.g., every 60s) or when the user navigates to the trading screen.
+2.  **Active Page Handling:** If a user is currently viewing the chart of an asset that gets disabled:
+    *   Ideally, show a toast: "This asset is currently unavailable for trading."
+    *   Redirect them to a default asset (e.g., BTCUSDT) or show a "Maintenance" placeholder.
+

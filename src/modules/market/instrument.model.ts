@@ -3,7 +3,7 @@ import { Schema, model, Document } from 'mongoose';
 export interface IInstrument extends Document {
   symbol: string;
   displayName: string;
-  type: 'CRYPTO' | 'FOREX' | 'INDEX' | 'STOCK';
+  type: 'CRYPTO' | 'FOREX' | 'INDEX' | 'STOCK' | 'COMMODITY';
   isEnabled: boolean;
   decimalPlaces: number;
   minStakeUsd: number;
@@ -21,7 +21,7 @@ export interface IInstrument extends Document {
 const instrumentSchema = new Schema<IInstrument>({
   symbol: { type: String, required: true, unique: true },
   displayName: { type: String, required: true },
-  type: { type: String, enum: ['CRYPTO', 'FOREX', 'INDEX', 'STOCK'], required: true },
+  type: { type: String, enum: ['CRYPTO', 'FOREX', 'INDEX', 'STOCK', 'COMMODITY'], required: true },
   isEnabled: { type: Boolean, default: true },
   decimalPlaces: { type: Number, required: true },
   minStakeUsd: { type: Number, required: true },
