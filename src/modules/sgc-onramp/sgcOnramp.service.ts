@@ -12,6 +12,7 @@ import LedgerEntry from '../wallets/ledgerEntry.model';
 import Wallet from '../wallets/wallet.model';
 import mongoose from 'mongoose';
 import logger from '../../common/utils/logger';
+import axios from 'axios';
 
 interface ICreateDepositIntentPayload {
   amountUsd: number;
@@ -144,5 +145,81 @@ export const confirmDeposit = async (depositIntentId: string, txHash: string, am
     throw error;
   } finally {
     session.endSession();
+  }
+};
+
+export const redeemCode = async (user: IUser, code: string) => {
+  if (!config.sgchain.apiUrl || !config.sgchain.secret) {
+    throw new ApiError(httpStatus.SERVICE_UNAVAILABLE, 'SGChain integration is not configured');
+  }
+
+  try {
+    const response = await axios.post(
+      `${config.sgchain.apiUrl}/partner/sgtrading/redeem`,
+      { code },
+      {
+        headers: {
+          'X-Internal-Secret': config.sgchain.secret,
+        },
+      }
+    );
+
+    const { amountUsd, originalSgcAmount, transferId } = response.data;
+
+    // Credit User Wallet
+    const wallet = await walletService.getWalletByUserId(user.id);
+    if (!wallet) {
+      throw new ApiError(httpStatus.NOT_FOUND, 'Wallet not found');
+    }
+
+    await Wallet.findByIdAndUpdate(
+      wallet.id,
+      { $inc: { liveBalanceUsd: amountUsd } }
+    );
+
+    // 2. Create Ledger Entry
+    await new LedgerEntry({
+      walletId: wallet.id,
+      userId: user.id,
+      type: 'DEPOSIT',
+      mode: 'LIVE',
+      amountUsd,
+      referenceType: 'SGC_REDEMPTION',
+      referenceId: transferId, // External ID from SGChain
+    }).save();
+    
+    logger.info({ userId: user.id, code, amountUsd, transferId }, 'SGC Redemption Successful');
+    
+    return { amountUsd, originalSgcAmount, transferId };
+
+  } catch (error: any) {
+    logger.error({ err: error, userId: user.id, code }, 'SGC Redemption Failed');
+
+    if (error.response) {
+      const { status, data } = error.response;
+      
+      // Map SGChain errors to our ApiError with specific messages
+      if (status === 400) throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid code format');
+      if (status === 401) throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'SGChain Auth Error');
+      
+      if (status === 500 && data?.error) {
+         if (data.error === 'CODE_EXPIRED') {
+             throw new ApiError(httpStatus.BAD_REQUEST, 'This code has expired (10 min limit). Please generate a new one on SGChain.');
+         }
+         if (data.error === 'ONCHAIN_TRANSFER_FAILED') {
+             throw new ApiError(httpStatus.SERVICE_UNAVAILABLE, 'Transfer failed on the blockchain. Funds remain in your SGChain account. Please try again later.');
+         }
+         if (data.error === 'CODE_ALREADY_CLAIMED') {
+             throw new ApiError(httpStatus.CONFLICT, 'This code has already been used.');
+         }
+         if (data.error === 'INVALID_CODE') {
+             throw new ApiError(httpStatus.NOT_FOUND, 'Invalid redemption code.');
+         }
+         
+         // Fallback for other errors
+         throw new ApiError(httpStatus.BAD_REQUEST, data.error);
+      }
+    }
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Failed to redeem code. Please try again.');
   }
 };

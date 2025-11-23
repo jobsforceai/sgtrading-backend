@@ -29,6 +29,8 @@ const envSchema = z.object({
   ALPACA_DATA_WS_URL: z.string().url(),
   ALPACA_DATA_API_URL: z.string().url(),
   TWELVEDATA_API_KEY: z.string().optional(), // Optional for now to avoid crash if not set immediately
+  SGCHAIN_API_URL: z.string().url().optional(), // URL for SGChain integration
+  SGCHAIN_SECRET: z.string().optional(), // Shared secret for SGChain integration
 });
 
 const env = envSchema.parse(process.env);
@@ -68,5 +70,9 @@ export const config = {
   },
   twelvedata: {
     apiKey: env.TWELVEDATA_API_KEY,
+  },
+  sgchain: {
+    apiUrl: env.SGCHAIN_API_URL,
+    secret: env.SGCHAIN_SECRET,
   },
 };

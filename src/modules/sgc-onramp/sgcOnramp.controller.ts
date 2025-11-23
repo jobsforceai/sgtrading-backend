@@ -28,3 +28,16 @@ export const sgcWebhookController = async (req: Request, res: Response, next: Ne
     next(error);
   }
 };
+
+export const redeemCodeController = async (req: IAuthRequest, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user) {
+      throw new ApiError(httpStatus.UNAUTHORIZED, 'User not authenticated');
+    }
+    const { code } = req.body;
+    const result = await sgcOnrampService.redeemCode(req.user, code);
+    res.status(httpStatus.OK).send(result);
+  } catch (error) {
+    next(error);
+  }
+};

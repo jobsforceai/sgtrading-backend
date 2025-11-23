@@ -6,7 +6,7 @@ export interface ILedgerEntry extends Document {
   type: 'DEPOSIT' | 'WITHDRAWAL' | 'TRADE_OPEN_HOLD' | 'TRADE_PAYOUT' | 'TRADE_LOSS' | 'ADJUSTMENT' | 'PLATFORM_FEE' | 'INSURANCE_PAYOUT';
   mode: 'LIVE' | 'DEMO';
   amountUsd: number;
-  referenceType: 'TRADE' | 'DEPOSIT_INTENT' | 'WITHDRAWAL_REQUEST' | 'ADMIN_ADJUSTMENT';
+  referenceType: 'TRADE' | 'DEPOSIT_INTENT' | 'WITHDRAWAL_REQUEST' | 'ADMIN_ADJUSTMENT' | 'SGC_REDEMPTION';
   referenceId: Schema.Types.ObjectId | string;
 }
 
@@ -16,7 +16,7 @@ const ledgerEntrySchema = new Schema<ILedgerEntry>({
   type: { type: String, enum: ['DEPOSIT', 'WITHDRAWAL', 'TRADE_OPEN_HOLD', 'TRADE_PAYOUT', 'TRADE_LOSS', 'ADJUSTMENT', 'PLATFORM_FEE', 'INSURANCE_PAYOUT'], required: true },
   mode: { type: String, enum: ['LIVE', 'DEMO'], required: true },
   amountUsd: { type: Number, required: true }, // Can be positive or negative
-  referenceType: { type: String, enum: ['TRADE', 'DEPOSIT_INTENT', 'WITHDRAWAL_REQUEST', 'ADMIN_ADJUSTMENT'], required: true },
+  referenceType: { type: String, enum: ['TRADE', 'DEPOSIT_INTENT', 'WITHDRAWAL_REQUEST', 'ADMIN_ADJUSTMENT', 'SGC_REDEMPTION'], required: true },
   referenceId: { type: Schema.Types.Mixed, required: true },
 }, {
   timestamps: { createdAt: true, updatedAt: false }, // Ledger entries are immutable
