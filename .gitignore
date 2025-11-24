@@ -9,3 +9,4 @@ dist
 README.md
 npm-debug.log
 .vscode
+logs

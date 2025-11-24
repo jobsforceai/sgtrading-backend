@@ -54,7 +54,6 @@ const runVerification = async () => {
       stakeUsd: 100,
       expirySeconds: 10,
       botId: bot1.id,
-      isInsured: false,
     });
 
     // Mock Win Price
@@ -89,7 +88,6 @@ const runVerification = async () => {
       stakeUsd: 100,
       expirySeconds: 10,
       botId: bot2.id,
-      isInsured: true,
     });
 
     // Mock Loss Price

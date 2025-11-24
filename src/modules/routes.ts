@@ -7,6 +7,8 @@ import tradingRoutes from './trading/trading.routes';
 import sgcOnrampRoutes from './sgc-onramp/sgcOnramp.routes';
 import adminRoutes from './admin/admin.routes';
 import botRoutes from './bots/bot.routes';
+import vaultRoutes from './vaults/vault.routes';
+import externalListingsRoutes from './external-listings/externalListings.routes';
 
 const router = express.Router();
 
@@ -18,5 +20,7 @@ router.use('/trades', tradingRoutes);
 router.use('/sgc-onramp', sgcOnrampRoutes);
 router.use('/admin', adminRoutes);
 router.use('/bots', botRoutes);
+router.use('/vaults', vaultRoutes);
+router.use('/external', externalListingsRoutes);
 
 export default router;

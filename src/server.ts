@@ -19,6 +19,7 @@ import { seedDatabase } from './config/seeder';
 import { initSocketServer } from './ws/socketServer';
 import redisClient from './config/redis'; // Import redisClient
 import { BINANCE_SYMBOLS } from './modules/market/market.config'; // Import BINANCE_SYMBOLS
+import { startVaultSettlementWorker } from './modules/vaults/workers/vaultSettlement.worker';
 
 const CONTROL_CHANNEL = 'market-control-channel';
 
@@ -34,6 +35,7 @@ const startServer = async () => {
     startSgcDepositConfirmWorker();
     startSyntheticMarketWorker();
     startBotRunnerWorker();
+    startVaultSettlementWorker(); // New: Vault Settlement
 
     // Start WebSocket Workers for Real-time Data
     startBinanceWsWorker();

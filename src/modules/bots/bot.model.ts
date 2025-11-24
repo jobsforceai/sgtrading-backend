@@ -21,7 +21,8 @@ export interface IBotStats {
 export interface IBot extends Document {
   userId: Schema.Types.ObjectId;
   name: string;
-  mode: 'LIVE' | 'DEMO'; // Support for Demo bots
+  mode: 'LIVE'; // Only LIVE allowed now
+  visibility: 'PRIVATE' | 'PUBLIC';
   strategy: 'RSI_STRATEGY' | 'MACD_STRATEGY' | 'RANDOM_TEST' | 'SMA_CROSSOVER';
   assets: string[]; // Symbols to trade
   parameters: Record<string, any>; // Strategy params
@@ -29,16 +30,22 @@ export interface IBot extends Document {
   
   config: IBotConfig;
 
-  profitSharePercent: number;
-  insuranceEnabled: boolean;
+  profitSharePercent: number; // % of profit shared with creator (if cloned) or platform
   
+  // New Insurance System
+  insuranceStatus: 'NONE' | 'PENDING' | 'ACTIVE' | 'REJECTED';
+  
+  // Public Bot Lineage
+  clonedFrom?: Schema.Types.ObjectId; // If using a public bot
+
   stats: IBotStats;
 }
 
 const botSchema = new Schema<IBot>({
   userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   name: { type: String, required: true },
-  mode: { type: String, enum: ['LIVE', 'DEMO'], default: 'DEMO' }, // Default to Demo for safety
+  mode: { type: String, enum: ['LIVE'], default: 'LIVE' }, 
+  visibility: { type: String, enum: ['PRIVATE', 'PUBLIC'], default: 'PRIVATE' },
   strategy: { type: String, enum: ['RSI_STRATEGY', 'MACD_STRATEGY', 'RANDOM_TEST', 'SMA_CROSSOVER'], required: true },
   assets: { type: [String], required: true, default: ['btcusdt'] },
   parameters: { type: Map, of: Schema.Types.Mixed, default: {} },
@@ -54,7 +61,9 @@ const botSchema = new Schema<IBot>({
   },
 
   profitSharePercent: { type: Number, default: 50 },
-  insuranceEnabled: { type: Boolean, default: false },
+  
+  insuranceStatus: { type: String, enum: ['NONE', 'PENDING', 'ACTIVE', 'REJECTED'], default: 'NONE' },
+  clonedFrom: { type: Schema.Types.ObjectId, ref: 'Bot', index: true },
   
   stats: {
     totalTrades: { type: Number, default: 0 },

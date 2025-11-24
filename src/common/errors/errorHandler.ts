@@ -4,11 +4,19 @@ import logger from '../utils/logger';
 import { ApiError } from './ApiError';
 import httpStatus from 'http-status';
 
-export const errorHandler = (err: ApiError, req: Request, res: Response, next: NextFunction) => {
+export const errorHandler = (err: any, req: Request, res: Response, next: NextFunction) => {
   let { statusCode, message } = err;
-  if (config.nodeEnv === 'production' && !err.isOperational) {
+
+  // Handle Mongoose Validation Error
+  if (err.name === 'ValidationError') {
+    statusCode = httpStatus.BAD_REQUEST;
+    message = err.message;
+  }
+  
+  // Fallback for unknown errors
+  if (!statusCode) {
     statusCode = httpStatus.INTERNAL_SERVER_ERROR;
-    message = httpStatus[httpStatus.INTERNAL_SERVER_ERROR] as string;
+    message = message || httpStatus[httpStatus.INTERNAL_SERVER_ERROR];
   }
 
   res.locals.errorMessage = err.message;

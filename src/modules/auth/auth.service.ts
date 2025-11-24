@@ -119,7 +119,7 @@ export const generateAuthTokens = async (user: IUser) => {
   await RefreshToken.create({
     token: refreshToken,
     user: user.id,
-    expires: moment().add(config.jwt.refreshTokenExpiration, 'days').toDate(),
+    expires: moment().add(parseInt(config.jwt.refreshTokenExpiration), 'days').toDate(),
   });
 
   return { accessToken, refreshToken };

@@ -3,16 +3,18 @@ import { config } from '../../../config/config';
 import logger from '../../../common/utils/logger';
 import Bot from '../bot.model';
 import User from '../../users/user.model';
-import { openTrade } from '../../trading/trading.service';
+import { openTrade, openVaultTrade } from '../../trading/trading.service';
 import { botQueue } from '../../../config/bullmq';
 import { getStrategy } from '../strategies/registry';
 import * as marketService from '../../market/market.service';
 import redisClient from '../../../config/redis';
+import InvestmentVault from '../../vaults/investmentVault.model';
 
 const CONTROL_CHANNEL = 'market-control-channel';
 
 const processBots = async () => {
-  const bots = await Bot.find({ status: 'ACTIVE' });
+  // Populate clonedFrom to access Parent Bot details (Status, Insurance, Profit Share)
+  const bots = await Bot.find({ status: 'ACTIVE' }).populate('clonedFrom');
   // logger.info({ count: bots.length }, 'Processing active bots');
 
   // 0. Ensure Market Data Subscriptions
@@ -29,6 +31,27 @@ const processBots = async () => {
 
   for (const bot of bots) {
     try {
+      // --- OPTION 2: PARENT CHECK / FRANCHISE MODEL ---
+      // If this is a cloned bot, we must check the Master Bot ("Headquarters")
+      if (bot.clonedFrom) {
+        const parentBot = bot.clonedFrom as any; // Type assertion since populated
+
+        // 1. Kill Switch: If Master is paused/stopped, the Clone pauses
+        if (parentBot.status !== 'ACTIVE') {
+           // logger.debug({ botId: bot.id, parentId: parentBot._id }, 'Skipping clone because Master Bot is not ACTIVE');
+           continue; 
+        }
+
+        // --- FUTURE: INSURANCE ENFORCEMENT ---
+        // if (parentBot.insuranceStatus === 'ACTIVE') {
+        //    bot.insuranceStatus = 'ACTIVE'; // Inherit insurance status dynamically
+        // }
+
+        // --- FUTURE: PROFIT SHARE ENFORCEMENT ---
+        // Ensure we use the Parent's current percentage, not the Clone's stale copy
+        // bot.profitSharePercent = parentBot.profitSharePercent;
+      }
+      
       // 1. Check Limits
       if (bot.stats.activeTrades >= bot.config.maxConcurrentTrades) {
         continue;
@@ -89,6 +112,7 @@ const processBots = async () => {
         if (direction) {
             logger.info({ botId: bot.id, symbol, strategy: bot.strategy, direction }, 'Bot Triggering Trade');
             
+            // A. Trigger Personal Trade (The Creator's Trade)
             try {
             await openTrade(user, {
                 mode: bot.mode,
@@ -97,7 +121,6 @@ const processBots = async () => {
                 stakeUsd: bot.config.tradeAmount,
                 expirySeconds: bot.config.expirySeconds,
                 botId: bot.id,
-                isInsured: bot.insuranceEnabled,
             });
             // Increment local tracker to prevent over-trading in this same tick
             bot.stats.activeTrades += 1; 
@@ -108,6 +131,19 @@ const processBots = async () => {
                 await bot.save();
                 break; // Stop processing this bot
             }
+            }
+
+            // B. Trigger Vault Trades (If this bot runs a Hedge Fund)
+            try {
+                const activeVaults = await InvestmentVault.find({ botId: bot.id, status: 'ACTIVE' });
+                if (activeVaults.length > 0) {
+                    logger.info({ count: activeVaults.length }, 'Triggering Vault Trades linked to this bot');
+                    for (const vault of activeVaults) {
+                        await openVaultTrade(vault, symbol, direction, bot.config.expirySeconds);
+                    }
+                }
+            } catch (err) {
+                logger.error({ err }, 'Failed to trigger vault trades');
             }
         }
       }

@@ -75,4 +75,8 @@ export const config = {
     apiUrl: env.SGCHAIN_API_URL,
     secret: env.SGCHAIN_SECRET,
   },
+  coinmarketcap: {
+    apiKey: process.env.COINMARKETCAP_API_KEY || '3ed3b558a52e4f1ca38faeb9250d41a5',
+    apiUrl: process.env.COINMARKETCAP_API_URL || 'https://pro-api.coinmarketcap.com',
+  },
 };

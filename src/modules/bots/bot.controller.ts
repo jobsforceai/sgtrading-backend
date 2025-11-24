@@ -11,7 +11,14 @@ export const getDefinitions = (req: Request, res: Response) => {
 
 export const createBot = async (req: IAuthRequest, res: Response, next: NextFunction) => {
   try {
-    const bot = await botService.createBot(req.user!, req.body);
+    const payload = { ...req.body };
+    
+    // Map legacy root fields to config object
+    if (payload.tradeAmount) {
+        payload.config = { ...payload.config, tradeAmount: payload.tradeAmount };
+    }
+
+    const bot = await botService.createBot(req.user!, payload);
     res.status(httpStatus.CREATED).send(bot);
   } catch (error) {
     next(error);
@@ -21,6 +28,15 @@ export const createBot = async (req: IAuthRequest, res: Response, next: NextFunc
 export const getBots = async (req: IAuthRequest, res: Response, next: NextFunction) => {
   try {
     const bots = await botService.getBots(req.user!);
+    res.status(httpStatus.OK).send(bots);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getPublicBots = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const bots = await botService.getPublicBots();
     res.status(httpStatus.OK).send(bots);
   } catch (error) {
     next(error);

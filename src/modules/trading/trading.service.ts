@@ -14,6 +14,8 @@ import Wallet from '../wallets/wallet.model';
 import moment from 'moment';
 import logger from '../../common/utils/logger';
 
+import InvestmentVault, { IInvestmentVault } from '../vaults/investmentVault.model';
+
 interface IOpenTradePayload {
   mode: 'LIVE' | 'DEMO';
   symbol: string;
@@ -21,8 +23,10 @@ interface IOpenTradePayload {
   stakeUsd: number;
   expirySeconds: number;
   botId?: string;
-  isInsured?: boolean;
 }
+
+// ... existing code ...
+
 
 // Helper to handle transactions with fallback for standalone MongoDB (Dev envs)
 const runInTransaction = async <T>(callback: (session: ClientSession | null) => Promise<T>): Promise<T> => {
@@ -65,7 +69,7 @@ const isMarketOpen = (instrument: any): boolean => {
 };
 
 export const openTrade = async (user: IUser, payload: IOpenTradePayload) => {
-  const { mode, symbol, direction, stakeUsd, expirySeconds, botId, isInsured } = payload;
+  const { mode, symbol, direction, stakeUsd, expirySeconds, botId } = payload;
 
   // 1. Validate Instrument
   const instrument = await Instrument.findOne({ symbol, isEnabled: true });
@@ -121,7 +125,6 @@ export const openTrade = async (user: IUser, payload: IOpenTradePayload) => {
       requestedExpirySeconds: expirySeconds,
       expiresAt,
       botId: botId ? new mongoose.Types.ObjectId(botId) : undefined,
-      isInsured: !!isInsured,
     });
     await trade.save({ session: session || null });
 
@@ -222,7 +225,8 @@ export const settleTrade = async (tradeId: string) => {
     let bot: any = null;
 
     if (trade.botId) {
-        bot = await Bot.findById(trade.botId).session(session || null);
+        // Populate clonedFrom to check for Profit Share routing (Franchise Model)
+        bot = await Bot.findById(trade.botId).populate('clonedFrom').session(session || null);
     }
 
     if (outcome === 'WIN') {
@@ -230,49 +234,92 @@ export const settleTrade = async (tradeId: string) => {
       payout = grossPayout;
 
       // Bot Profit Sharing
-      if (bot && bot.profitSharePercent > 0) {
-          const grossProfit = grossPayout - trade.stakeUsd;
-          platformFee = grossProfit * (bot.profitSharePercent / 100);
-          payout -= platformFee;
+      if (bot) {
+          // Priority: Use Master Bot's percentage if this is a clone (Enforce Franchise Rule)
+          const sharePercent = bot.clonedFrom ? bot.clonedFrom.profitSharePercent : bot.profitSharePercent;
+
+          if (sharePercent > 0) {
+              const grossProfit = grossPayout - trade.stakeUsd;
+              platformFee = grossProfit * (sharePercent / 100);
+              payout -= platformFee;
+              
+              // --- FUTURE: ROUTE FEE TO CREATOR ---
+              // If bot.clonedFrom exists, 'platformFee' should technically be 'creatorFee'
+              // const creatorId = bot.clonedFrom.userId;
+              // await Wallet.findOneAndUpdate({ userId: creatorId }, { $inc: { liveBalanceUsd: platformFee } });
+              // await LedgerEntry.create({ ... type: 'CREATOR_FEE_RECEIVED' ... });
+          }
       }
     } else if (outcome === 'DRAW') {
       payout = trade.stakeUsd;
     } else if (outcome === 'LOSS') {
-       if (trade.isInsured) {
-           payout = trade.stakeUsd; // Insurance Refund
-       }
+       // No insurance logic here anymore
     }
 
     // Create ledger entry for the outcome
-    if (payout > 0) {
-      const ledgerType = (outcome === 'LOSS' && trade.isInsured) ? 'INSURANCE_PAYOUT' : (outcome === 'WIN' ? 'TRADE_PAYOUT' : 'ADJUSTMENT');
-      
-      await new LedgerEntry({
-        walletId: trade.walletId,
-        userId: trade.userId,
-        type: ledgerType,
-        mode: trade.mode,
-        amountUsd: payout,
-        referenceType: 'TRADE',
-        referenceId: trade.id,
-      }).save({ session: session || null });
-    }
-    
-    if (platformFee > 0) {
-       await new LedgerEntry({
-        walletId: trade.walletId,
-        userId: trade.userId,
-        type: 'PLATFORM_FEE',
-        mode: trade.mode,
-        amountUsd: platformFee,
-        referenceType: 'TRADE',
-        referenceId: trade.id,
-       }).save({ session: session || null });
-    }
+    if (trade.vaultId) {
+        // --- VAULT SETTLEMENT LOGIC ---
+        const vault = await InvestmentVault.findById(trade.vaultId).session(session || null);
+        if (vault) {
+            let pnl = 0;
+            if (outcome === 'WIN') {
+                pnl = payout - trade.stakeUsd; // Net Profit
+            } else if (outcome === 'LOSS') {
+                pnl = -trade.stakeUsd; // Net Loss
+            }
+            // Draw = 0 PnL
 
-    // Update wallet balance
-    const balanceField = trade.mode === 'LIVE' ? 'liveBalanceUsd' : 'demoBalanceUsd';
-    await Wallet.findByIdAndUpdate(trade.walletId, { $inc: { [balanceField]: payout } }, { session: session || null });
+            if (pnl !== 0) {
+                // Update Pool Size
+                vault.totalPoolAmount += pnl;
+                await vault.save({ session: session || null });
+
+                // Ledger
+                // Note: We need a walletId for LedgerEntry, typically the creator's or a system wallet?
+                // For now, using trade.walletId (which we set to creatorId in openVaultTrade)
+                await new LedgerEntry({
+                    walletId: trade.walletId, 
+                    userId: trade.userId,
+                    type: 'VAULT_PROFIT',
+                    mode: 'LIVE',
+                    amountUsd: pnl,
+                    referenceType: 'INVESTMENT_VAULT',
+                    referenceId: vault.id
+                }).save({ session: session || null });
+            }
+        }
+    } else {
+        // --- USER WALLET SETTLEMENT LOGIC ---
+        if (payout > 0) {
+          const ledgerType = outcome === 'WIN' ? 'TRADE_PAYOUT' : 'ADJUSTMENT';
+          
+          await new LedgerEntry({
+            walletId: trade.walletId,
+            userId: trade.userId,
+            type: ledgerType,
+            mode: trade.mode,
+            amountUsd: payout,
+            referenceType: 'TRADE',
+            referenceId: trade.id,
+          }).save({ session: session || null });
+        }
+        
+        if (platformFee > 0) {
+           await new LedgerEntry({
+            walletId: trade.walletId,
+            userId: trade.userId,
+            type: 'PLATFORM_FEE',
+            mode: trade.mode,
+            amountUsd: platformFee,
+            referenceType: 'TRADE',
+            referenceId: trade.id,
+           }).save({ session: session || null });
+        }
+
+        // Update wallet balance
+        const balanceField = trade.mode === 'LIVE' ? 'liveBalanceUsd' : 'demoBalanceUsd';
+        await Wallet.findByIdAndUpdate(trade.walletId, { $inc: { [balanceField]: payout } }, { session: session || null });
+    }
 
     // Update trade status
     trade.status = 'SETTLED';
@@ -316,5 +363,61 @@ export const settleTrade = async (tradeId: string) => {
              await updatedBot.save({ session: session || null });
         }
     }
+  });
+};
+
+export const openVaultTrade = async (vault: IInvestmentVault, symbol: string, direction: 'UP' | 'DOWN', expirySeconds: number) => {
+  // 1. Validate Vault State
+  if (vault.status !== 'ACTIVE') return;
+
+  // 2. Determine Stake (5% of Pool)
+  const RISK_PER_TRADE = 0.05;
+  const stakeUsd = parseFloat((vault.totalPoolAmount * RISK_PER_TRADE).toFixed(2));
+  if (stakeUsd < 1) return;
+
+  // 3. Get Market Data
+  const tick = await marketService.getQuote(symbol);
+  if (!tick) return; // Stale/Offline
+  
+  // 4. Create Trade in Transaction
+  return runInTransaction(async (session) => {
+      // Find instrument for ID
+      const instrument = await Instrument.findOne({ symbol });
+      if (!instrument) return;
+
+      const expiresAt = new Date(Date.now() + expirySeconds * 1000);
+      
+      const trade = new Trade({
+          userId: vault.creatorId, // Technically the creator manages it
+          walletId: vault.creatorId, // Placeholder, won't be used for Vault trades logic
+          vaultId: vault.id,         // LINK TO VAULT
+          mode: 'LIVE',
+          instrumentId: instrument.id,
+          instrumentSymbol: symbol,
+          direction,
+          stakeUsd,
+          payoutPercent: instrument.defaultPayoutPercent,
+          entryPrice: tick.last,
+          requestedExpirySeconds: expirySeconds,
+          expiresAt,
+          botId: vault.botId
+      });
+      await trade.save({ session });
+
+      // Ledger: Track that we have "Invested" this amount (it's at risk)
+      // We don't deduct from poolAmount yet? 
+      // Actually, standard accounting: Capital is committed.
+      // But for simplicity, we just track the outcome. 
+      // If we lose, we deduct. If we win, we add profit.
+      // But we should verify we don't double-spend. 
+      // Since we calculate stake dynamically (5% of current), it's self-correcting.
+      
+      // Schedule Settlement
+      await tradeSettlementQueue.add('settle-trade', { tradeId: trade.id }, {
+          delay: expirySeconds * 1000,
+          jobId: trade.id,
+      });
+
+      return trade;
   });
 };

@@ -15,6 +15,7 @@ export interface ITrade extends Document {
   outcome: 'WIN' | 'LOSS' | 'DRAW' | null;
   payoutAmount: number | null; // The total amount credited to wallet (Stake + Profit)
   botId?: Schema.Types.ObjectId; // Reference to the bot if automated
+  vaultId?: Schema.Types.ObjectId; // Reference to the vault if this is a pooled trade
   isInsured: boolean;
   insuranceCost: number;
   platformFee: number; // Profit share taken by platform
@@ -39,6 +40,7 @@ const tradeSchema = new Schema<ITrade>({
   outcome: { type: String, enum: ['WIN', 'LOSS', 'DRAW'], default: null },
   payoutAmount: { type: Number, default: null },
   botId: { type: Schema.Types.ObjectId, ref: 'Bot' },
+  vaultId: { type: Schema.Types.ObjectId, ref: 'InvestmentVault' },
   isInsured: { type: Boolean, default: false },
   insuranceCost: { type: Number, default: 0 },
   platformFee: { type: Number, default: 0 },
