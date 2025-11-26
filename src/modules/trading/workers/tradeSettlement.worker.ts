@@ -1,5 +1,6 @@
 import { Worker } from 'bullmq';
 import { config } from '../../../config/config';
+import { connection } from '../../../config/bullmq';
 import logger from '../../../common/utils/logger';
 import { settleTrade } from '../trading.service';
 
@@ -22,10 +23,7 @@ export const startTradeSettlementWorker = () => {
       }
     },
     {
-      connection: {
-        host: config.redis.host,
-        port: config.redis.port,
-      },
+      connection,
     }
   );
 };

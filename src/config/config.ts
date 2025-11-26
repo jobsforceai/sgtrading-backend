@@ -11,8 +11,9 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   MONGO_URI: z.string().url(),
-  REDIS_HOST: z.string(),
-  REDIS_PORT: z.coerce.number(),
+  REDIS_HOST: z.string().optional(),
+  REDIS_PORT: z.coerce.number().optional(),
+  REDIS_URL: z.string().url().optional(),
   JWT_SECRET: z.string(),
   JWT_REFRESH_SECRET: z.string(),
   JWT_ACCESS_TOKEN_EXPIRATION: z.string(),
@@ -31,9 +32,37 @@ const envSchema = z.object({
   TWELVEDATA_API_KEY: z.string().optional(), // Optional for now to avoid crash if not set immediately
   SGCHAIN_API_URL: z.string().url().optional(), // URL for SGChain integration
   SGCHAIN_SECRET: z.string().optional(), // Shared secret for SGChain integration
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  EMAIL_FROM: z.string().optional(),
 });
 
 const env = envSchema.parse(process.env);
+
+let redisConfig = {
+  host: env.REDIS_HOST || 'localhost',
+  port: env.REDIS_PORT || 6379,
+  username: undefined as string | undefined,
+  password: undefined as string | undefined,
+  tls: undefined as boolean | undefined,
+};
+
+if (env.REDIS_URL) {
+  try {
+    const url = new URL(env.REDIS_URL);
+    redisConfig.host = url.hostname;
+    redisConfig.port = parseInt(url.port, 10);
+    redisConfig.username = url.username || undefined;
+    redisConfig.password = url.password || undefined;
+    if (url.protocol === 'rediss:') {
+      redisConfig.tls = true;
+    }
+  } catch (error) {
+    console.error('Invalid REDIS_URL:', error);
+  }
+}
 
 export const config = {
   port: env.PORT,
@@ -41,15 +70,23 @@ export const config = {
   mongo: {
     uri: env.MONGO_URI,
   },
-  redis: {
-    host: env.REDIS_HOST,
-    port: env.REDIS_PORT,
-  },
+  redis: redisConfig,
   jwt: {
     secret: env.JWT_SECRET,
     refreshSecret: env.JWT_REFRESH_SECRET,
     accessTokenExpiration: env.JWT_ACCESS_TOKEN_EXPIRATION,
     refreshTokenExpiration: env.JWT_REFRESH_TOKEN_EXPIRATION,
+  },
+  email: {
+    smtp: {
+      host: env.SMTP_HOST,
+      port: env.SMTP_PORT,
+      auth: {
+        user: env.SMTP_USER,
+        pass: env.SMTP_PASS,
+      },
+    },
+    from: env.EMAIL_FROM,
   },
   finnhub: {
     apiKey: env.FINNHUB_API_KEY,

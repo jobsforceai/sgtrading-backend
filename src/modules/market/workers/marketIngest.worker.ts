@@ -3,6 +3,7 @@ import { FinnhubProvider } from '../finnhub.provider';
 import { config } from '../../../config/config';
 import logger from '../../../common/utils/logger';
 import redisClient from '../../../config/redis'; // Import redisClient
+import { connection } from '../../../config/bullmq';
 
 // These symbols are now in Yahoo Finance format.
 // We will only poll for stocks as other assets are handled by WS workers.
@@ -38,10 +39,7 @@ export const startMarketIngestWorker = () => {
       }
     },
     {
-      connection: {
-        host: config.redis.host,
-        port: config.redis.port,
-      },
+      connection,
     }
   );
 };

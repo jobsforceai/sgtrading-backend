@@ -73,68 +73,91 @@ const updatePriceForSymbol = async (symbol: string) => {
     // Optimization: In production, cache this lookup or use a local efficient cache
     const scenario = await adminService.getActiveScenario(symbol);
 
-    if (!scenario) {
-      return;
-    }
-
     const now = Date.now();
-    const startTime = scenario.startTime.getTime();
-    const endTime = scenario.endTime.getTime();
-
-    if (now < startTime || now > endTime) {
-        // If outside window, clear state so we restart cleanly next time
-        marketState.delete(symbol);
-        return;
-    }
-
-    const totalDurationSeconds = (endTime - startTime) / 1000;
-    const remainingSeconds = (endTime - now) / 1000;
-
-    // Prevent division by zero at the very end
-    if (remainingSeconds <= 0) return;
-
-    // 2. Determine Current Price State
     let currentPrice = marketState.get(symbol)?.lastPrice;
+    let nextPrice = 0;
 
-    // Initialize if missing (worker restart) or if it's the very start
-    if (currentPrice === undefined) {
-        // Calculate where we "should" be linearly to initialize cleanly
-        const progress = (now - startTime) / (endTime - startTime);
-        const trendPrice = scenario.startPrice + (scenario.endPrice - scenario.startPrice) * progress;
-        currentPrice = trendPrice;
+    if (!scenario) {
+      // Fallback: No scenario active.
+      // If we don't have a current price in memory, fetch the last known price from DB or default
+      if (currentPrice === undefined) {
+          const lastCandle = await Candle.findOne({ symbol: symbol.toUpperCase() }).sort({ time: -1 });
+          currentPrice = lastCandle ? lastCandle.close : 100.00; // Default to 100 if completely fresh
+      }
+
+      // Simulate a stable, low-volatility random walk
+      // No drift (drift = 0), just small noise
+      const volatility = 0.005; // Very small volatility for stability
+      const shock = boxMullerRandom() * volatility;
+      
+      nextPrice = currentPrice + shock;
+
+      // Soft bounds check to prevent it drifting to negative or infinity over long periods of neglect
+      // Let's keep it reasonably positive.
+      if (nextPrice < 0.01) nextPrice = 0.01;
+
+    } else {
+        const startTime = scenario.startTime.getTime();
+        const endTime = scenario.endTime.getTime();
+
+        if (now < startTime || now > endTime) {
+            // If outside window, clear state so we restart cleanly next time
+            // marketState.delete(symbol);
+            // return;
+            
+            // Actually, if we are outside the window, we should fall back to the "stable" mode 
+            // instead of just stopping. The logic above handles !scenario, but getActiveScenario might return null
+            // if we are outside the window (depending on implementation). 
+            // adminService.getActiveScenario checks dates: startTime: { $lte: now }, endTime: { $gte: now }
+            // So if we are here, we are INSIDE the window.
+        }
+
+        const totalDurationSeconds = (endTime - startTime) / 1000;
+        const remainingSeconds = (endTime - now) / 1000;
+
+        // Prevent division by zero at the very end
+        if (remainingSeconds <= 0) return;
+
+        // Initialize if missing (worker restart) or if it's the very start
+        if (currentPrice === undefined) {
+            // Calculate where we "should" be linearly to initialize cleanly
+            const progress = (now - startTime) / (endTime - startTime);
+            const trendPrice = scenario.startPrice + (scenario.endPrice - scenario.startPrice) * progress;
+            currentPrice = trendPrice;
+        }
+
+        // 3. Brownian Bridge SDE Step
+        // dX_t = ((Target - X_t) / RemainingTime) * dt + sigma * dW_t
+        
+        const dt = 1; // 1 second step (since we run this every 1000ms)
+        
+        // Drift component: Pulls the price towards the end target
+        // As time runs out, this force gets stronger, ensuring we hit the target.
+        const drift = (scenario.endPrice - currentPrice) / remainingSeconds;
+
+        // Volatility component: User requested 0.03 to 0.05 fluctuation
+        const minVol = 0.03;
+        const maxVol = 0.05;
+        const volatility = Math.random() * (maxVol - minVol) + minVol;
+        
+        const shock = boxMullerRandom() * volatility; // sigma * dW_t
+
+        nextPrice = currentPrice + (drift * dt) + shock;
+
+        // 4. Apply Bounds (High/Low)
+        // We soft-clamp or hard-clamp. Hard clamp ensures we strictly obey admin rules.
+        // If the drift is huge (trying to recover from a clamp), it might look weird, 
+        // but admin bounds are usually laws.
+        if (nextPrice > scenario.highPrice) nextPrice = scenario.highPrice;
+        if (nextPrice < scenario.lowPrice) nextPrice = scenario.lowPrice;
     }
-
-    // 3. Brownian Bridge SDE Step
-    // dX_t = ((Target - X_t) / RemainingTime) * dt + sigma * dW_t
-    
-    const dt = 1; // 1 second step (since we run this every 1000ms)
-    
-    // Drift component: Pulls the price towards the end target
-    // As time runs out, this force gets stronger, ensuring we hit the target.
-    const drift = (scenario.endPrice - currentPrice) / remainingSeconds;
-
-    // Volatility component: User requested 0.03 to 0.05 fluctuation
-    const minVol = 0.03;
-    const maxVol = 0.05;
-    const volatility = Math.random() * (maxVol - minVol) + minVol;
-    
-    const shock = boxMullerRandom() * volatility; // sigma * dW_t
-
-    let nextPrice = currentPrice + (drift * dt) + shock;
-
-    // 4. Apply Bounds (High/Low)
-    // We soft-clamp or hard-clamp. Hard clamp ensures we strictly obey admin rules.
-    // If the drift is huge (trying to recover from a clamp), it might look weird, 
-    // but admin bounds are usually laws.
-    if (nextPrice > scenario.highPrice) nextPrice = scenario.highPrice;
-    if (nextPrice < scenario.lowPrice) nextPrice = scenario.lowPrice;
 
     // 5. Update State
     marketState.set(symbol, { lastPrice: nextPrice, lastTs: now });
 
     // 6. Generate Volume
     // Volume peaks with volatility/movement
-    const moveSize = Math.abs(nextPrice - currentPrice);
+    const moveSize = Math.abs(nextPrice - (currentPrice || nextPrice));
     const baseVolume = Math.floor(Math.random() * 50) + 10;
     // If price moves a lot (e.g. 0.1), volume adds up. 
     const dynamicVolume = Math.floor(moveSize * 500); 

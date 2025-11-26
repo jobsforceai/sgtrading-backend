@@ -1,9 +1,12 @@
 import { Queue } from 'bullmq';
 import { config } from './config';
 
-const connection = {
+export const connection = {
   host: config.redis.host,
   port: config.redis.port,
+  username: config.redis.username,
+  password: config.redis.password,
+  ...(config.redis.tls ? { tls: { rejectUnauthorized: false } } : {}),
 };
 
 export const marketIngestQueue = new Queue('market-ingest', { connection });

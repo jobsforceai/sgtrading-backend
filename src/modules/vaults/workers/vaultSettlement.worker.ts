@@ -1,5 +1,6 @@
 import { Worker, Queue } from 'bullmq';
 import { config } from '../../../config/config';
+import { connection } from '../../../config/bullmq';
 import logger from '../../../common/utils/logger';
 import InvestmentVault from '../investmentVault.model';
 import VaultParticipation from '../vaultParticipation.model';
@@ -12,10 +13,7 @@ import { getStrategy } from '../../bots/strategies/registry';
 
 // Create a queue to schedule settlements
 export const vaultSettlementQueue = new Queue('vault-settlement', {
-    connection: {
-      host: config.redis.host,
-      port: config.redis.port,
-    },
+    connection,
 });
 
 // Helper for transactions (duplicated here to avoid circular dependency or complex imports if utils not ready)
@@ -182,10 +180,7 @@ export const startVaultSettlementWorker = () => {
        }
     },
     {
-      connection: {
-        host: config.redis.host,
-        port: config.redis.port,
-      },
+      connection,
     }
   );
   

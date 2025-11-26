@@ -10,7 +10,7 @@ import { generateOtp } from '../../common/utils/crypto';
 import logger from '../../common/utils/logger';
 import RefreshToken from './refreshToken.model';
 import moment from 'moment';
-import fs from 'fs';
+import { sendVerificationOtpEmail } from '../../email/email.service';
 
 
 export const loginWithPassword = async (email: string, passwordReq: string): Promise<IUser> => {
@@ -82,9 +82,7 @@ export const requestOtp = async (email: string): Promise<void> => {
   user.otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
   await user.save();
 
-  // In a real application, send the OTP via email
-  // For now, write to a file
-  fs.appendFileSync('otp.log', `OTP for ${email}: ${otp}\n`);
+  await sendVerificationOtpEmail(user, otp);
 };
 
 export const verifyOtpAndLogin = async (loginData: ILoginRequestBody): Promise<IUser> => {

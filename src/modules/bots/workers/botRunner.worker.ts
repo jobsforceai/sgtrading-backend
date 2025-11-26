@@ -4,7 +4,7 @@ import logger from '../../../common/utils/logger';
 import Bot from '../bot.model';
 import User from '../../users/user.model';
 import { openTrade, openVaultTrade } from '../../trading/trading.service';
-import { botQueue } from '../../../config/bullmq';
+import { botQueue, connection } from '../../../config/bullmq';
 import { getStrategy } from '../strategies/registry';
 import * as marketService from '../../market/market.service';
 import redisClient from '../../../config/redis';
@@ -161,10 +161,7 @@ export const startBotRunnerWorker = () => {
       await processBots();
     },
     {
-      connection: {
-        host: config.redis.host,
-        port: config.redis.port,
-      },
+      connection,
     }
   );
 
