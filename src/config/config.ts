@@ -13,6 +13,9 @@ const envSchema = z.object({
   MONGO_URI: z.string().url(),
   REDIS_HOST: z.string().optional(),
   REDIS_PORT: z.coerce.number().optional(),
+  REDIS_USERNAME: z.string().optional(),
+  REDIS_PASSWORD: z.string().optional(),
+  REDIS_TLS: z.enum(['true', 'false']).optional(),
   REDIS_URL: z.string().url().optional(),
   JWT_SECRET: z.string(),
   JWT_REFRESH_SECRET: z.string(),
@@ -44,9 +47,9 @@ const env = envSchema.parse(process.env);
 let redisConfig = {
   host: env.REDIS_HOST || 'localhost',
   port: env.REDIS_PORT || 6379,
-  username: undefined as string | undefined,
-  password: undefined as string | undefined,
-  tls: undefined as boolean | undefined,
+  username: env.REDIS_USERNAME || undefined,
+  password: env.REDIS_PASSWORD || undefined,
+  tls: env.REDIS_TLS === 'true' ? true : undefined as boolean | undefined,
 };
 
 if (env.REDIS_URL) {
@@ -54,8 +57,8 @@ if (env.REDIS_URL) {
     const url = new URL(env.REDIS_URL);
     redisConfig.host = url.hostname;
     redisConfig.port = parseInt(url.port, 10);
-    redisConfig.username = url.username || undefined;
-    redisConfig.password = url.password || undefined;
+    redisConfig.username = url.username || redisConfig.username;
+    redisConfig.password = url.password || redisConfig.password;
     if (url.protocol === 'rediss:') {
       redisConfig.tls = true;
     }
