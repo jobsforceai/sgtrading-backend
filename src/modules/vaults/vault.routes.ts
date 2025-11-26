@@ -1,8 +1,8 @@
-import express from 'express';
-import { createVault, deposit, getVaults, getVaultById, activateVault, getMyParticipations } from './vault.controller';
+import { createVault, deposit, getVaults, getVaultById, activateVault, getMyParticipations, withdrawFromVault } from './vault.controller';
 import { authMiddleware } from '../../common/middleware/authMiddleware';
 import { validate } from '../../common/utils/validator';
 import { z } from 'zod';
+import express from 'express';
 
 const router = express.Router();
 
@@ -33,13 +33,20 @@ const activateSchema = z.object({
     }),
 });
 
+const withdrawSchema = z.object({
+    params: z.object({
+      vaultId: z.string(),
+    }),
+});
+
 router.use(authMiddleware);
 
 router.post('/', validate(createVaultSchema), createVault);
 router.get('/', getVaults);
-router.get('/me/participations', getMyParticipations); // New endpoint
+router.get('/me/participations', getMyParticipations);
 router.get('/:vaultId', getVaultById);
 router.post('/:vaultId/deposit', validate(depositSchema), deposit);
 router.post('/:vaultId/activate', validate(activateSchema), activateVault);
+router.post('/:vaultId/withdraw', validate(withdrawSchema), withdrawFromVault);
 
 export default router;

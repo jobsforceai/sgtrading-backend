@@ -5,7 +5,7 @@ export const SmaStrategy: IStrategy = {
   id: 'SMA_CROSSOVER',
   name: 'SMA Crossover (Golden/Death Cross)',
   description: 'UP when Fast SMA crosses above Slow SMA.',
-  isPremium: false,
+  isPremium: true,
   requiredHistorySize: 100,
 
   analyze: async (ctx: StrategyContext) => {

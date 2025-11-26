@@ -6,6 +6,9 @@ import VaultParticipation from '../vaultParticipation.model';
 import Wallet from '../../wallets/wallet.model';
 import LedgerEntry from '../../wallets/ledgerEntry.model';
 import mongoose, { ClientSession } from 'mongoose';
+import { PLATFORM_FEES } from '../../../config/definitions';
+import Bot from '../../bots/bot.model';
+import { getStrategy } from '../../bots/strategies/registry';
 
 // Create a queue to schedule settlements
 export const vaultSettlementQueue = new Queue('vault-settlement', {
@@ -37,11 +40,21 @@ const runInTransaction = async <T>(callback: (session: ClientSession) => Promise
 
 export const settleVault = async (vaultId: string) => {
     return runInTransaction(async (session) => {
-        // 1. Fetch Vault
+        // 1. Fetch Vault (Lock it)
         const vault = await InvestmentVault.findOne({ _id: vaultId, status: 'ACTIVE' }).session(session);
         if (!vault) return;
 
         logger.info({ vaultId: vault.name, totalPool: vault.totalPoolAmount }, 'Settling Vault...');
+
+        // 1b. Fetch Bot for Strategy Check
+        const bot = await Bot.findById(vault.botId).session(session);
+        let platformRate = PLATFORM_FEES.BASE_FEE_PERCENT;
+        if (bot) {
+            const strategy = getStrategy(bot.strategy);
+            if (strategy && strategy.isPremium) {
+                platformRate += PLATFORM_FEES.PREMIUM_SURCHARGE_PERCENT;
+            }
+        }
 
         // 2. Performance
         const initialUserCapital = vault.userPoolAmount; 
@@ -63,18 +76,39 @@ export const settleVault = async (vaultId: string) => {
             let userGrossPayout = finalUserCapital * shareRatio;
             let userNetPayout = userGrossPayout;
 
+            const userWallet = await Wallet.findOne({ userId: part.userId }).session(session);
+            if (!userWallet) continue; // Should not happen but safety check
+
             if (isProfit) {
                 const userProfit = userGrossPayout - part.amountLockedUsd;
-                const creatorFee = userProfit * (vault.profitSharePercent / 100);
-                userNetPayout -= creatorFee;
                 
-                creatorWallet.liveBalanceUsd += creatorFee;
+                // Calculate Cuts
+                const platformCut = userProfit * (platformRate / 100);
+                const creatorCut = userProfit * (vault.profitSharePercent / 100);
+                
+                userNetPayout = userNetPayout - platformCut - creatorCut;
+                
+                // Ledger: Platform Fee
+                if (platformCut > 0) {
+                     await new LedgerEntry({
+                        walletId: userWallet.id, // Deducted from user technically
+                        userId: part.userId,
+                        type: 'PLATFORM_FEE',
+                        mode: 'LIVE',
+                        amountUsd: -platformCut,
+                        referenceType: 'INVESTMENT_VAULT',
+                        referenceId: vault.id
+                    }).save({ session });
+                }
+
+                // Credit Creator with THEIR Fee
+                creatorWallet.liveBalanceUsd += creatorCut;
                 await new LedgerEntry({
                     walletId: creatorWallet.id,
                     userId: vault.creatorId,
-                    type: 'PLATFORM_FEE',
+                    type: 'PLATFORM_FEE', // Logically CREATOR_FEE
                     mode: 'LIVE',
-                    amountUsd: creatorFee,
+                    amountUsd: creatorCut,
                     referenceType: 'INVESTMENT_VAULT',
                     referenceId: vault.id
                 }).save({ session });
@@ -94,11 +128,9 @@ export const settleVault = async (vaultId: string) => {
                 }
             }
 
-            const userWallet = await Wallet.findOne({ userId: part.userId }).session(session);
-            if (userWallet) {
-                userWallet.liveBalanceUsd += userNetPayout;
-                await userWallet.save({ session });
-            }
+            // Payout to User
+            userWallet.liveBalanceUsd += userNetPayout;
+            await userWallet.save({ session });
 
             part.status = 'SETTLED';
             part.finalPayoutUsd = userNetPayout;
@@ -106,7 +138,7 @@ export const settleVault = async (vaultId: string) => {
             await part.save({ session });
             
             await new LedgerEntry({
-                walletId: userWallet!.id,
+                walletId: userWallet.id,
                 userId: part.userId,
                 type: 'VAULT_REFUND',
                 mode: 'LIVE',

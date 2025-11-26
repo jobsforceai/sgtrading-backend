@@ -13,6 +13,8 @@ import Wallet from '../wallets/wallet.model';
 import mongoose from 'mongoose';
 import logger from '../../common/utils/logger';
 import axios from 'axios';
+import SgcRedemptionCode from './sgcRedemptionCode.model';
+import crypto from 'crypto';
 
 interface ICreateDepositIntentPayload {
   amountUsd: number;
@@ -76,40 +78,34 @@ export const processSGCWebhook = async (payload: ISGChainWebhookPayload) => {
 };
 
 export const confirmDeposit = async (depositIntentId: string, txHash: string, amountSgc: number) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  // NO TRANSACTION for DEV environment support
   try {
-    const depositIntent = await DepositIntent.findById(depositIntentId).session(session);
+    const depositIntent = await DepositIntent.findById(depositIntentId);
 
     if (!depositIntent) {
       logger.warn({ depositIntentId }, 'Deposit intent not found for confirmation');
-      await session.abortTransaction();
       return;
     }
 
     if (depositIntent.status !== 'PENDING') {
       logger.warn({ depositIntentId, status: depositIntent.status }, 'Deposit intent already processed or expired');
-      await session.abortTransaction();
       return;
     }
 
     if (moment().isAfter(depositIntent.expiresAt)) {
       depositIntent.status = 'EXPIRED';
-      await depositIntent.save({ session });
+      await depositIntent.save();
       logger.warn({ depositIntentId }, 'Deposit intent expired');
-      await session.abortTransaction();
       return;
     }
 
     // Basic validation: check if received SGC amount is close to intended amount
-    // A small tolerance might be needed for real-world scenarios due to floating point or minor exchange rate fluctuations
     const SGC_TOLERANCE = 0.001; // 0.1%
     if (Math.abs(amountSgc - depositIntent.sgcAmount) / depositIntent.sgcAmount > SGC_TOLERANCE) {
       depositIntent.status = 'FAILED';
       depositIntent.sgchainTxHash = txHash;
-      await depositIntent.save({ session });
+      await depositIntent.save();
       logger.error({ depositIntentId, expected: depositIntent.sgcAmount, received: amountSgc }, 'SGC amount mismatch');
-      await session.abortTransaction();
       throw new ApiError(httpStatus.BAD_REQUEST, 'SGC amount mismatch');
     }
 
@@ -117,7 +113,6 @@ export const confirmDeposit = async (depositIntentId: string, txHash: string, am
     const wallet = await walletService.getWalletByUserId(depositIntent.userId.toString());
     if (!wallet) {
       logger.error({ userId: depositIntent.userId }, 'Wallet not found for deposit confirmation');
-      await session.abortTransaction();
       throw new ApiError(httpStatus.NOT_FOUND, 'User wallet not found');
     }
 
@@ -129,22 +124,18 @@ export const confirmDeposit = async (depositIntentId: string, txHash: string, am
       amountUsd: depositIntent.amountUsd,
       referenceType: 'DEPOSIT_INTENT',
       referenceId: depositIntent.id,
-    }).save({ session });
+    }).save();
 
-    await Wallet.findByIdAndUpdate(wallet.id, { $inc: { liveBalanceUsd: depositIntent.amountUsd } }, { session });
+    await Wallet.findByIdAndUpdate(wallet.id, { $inc: { liveBalanceUsd: depositIntent.amountUsd } });
 
     depositIntent.status = 'CONFIRMED';
     depositIntent.sgchainTxHash = txHash;
-    await depositIntent.save({ session });
+    await depositIntent.save();
 
-    await session.commitTransaction();
     logger.info({ depositIntentId, userId: depositIntent.userId }, 'Deposit confirmed and wallet credited');
   } catch (error) {
-    await session.abortTransaction();
     logger.error({ err: error, depositIntentId }, 'Failed to confirm deposit');
     throw error;
-  } finally {
-    session.endSession();
   }
 };
 
@@ -222,4 +213,147 @@ export const redeemCode = async (user: IUser, code: string) => {
     }
     throw new ApiError(httpStatus.BAD_REQUEST, 'Failed to redeem code. Please try again.');
   }
+};
+
+/**
+ * REVERSE TRANSFER: SGTrading -> SGChain
+ * Generates a unique code for the user to input on SGChain.
+ * Deducts balance immediately.
+ */
+export const generateReverseTransfer = async (user: IUser, amountUsd: number) => {
+    if (amountUsd <= 0) throw new ApiError(httpStatus.BAD_REQUEST, 'Amount must be positive');
+
+    // NO TRANSACTION for DEV environment support
+    try {
+        // 1. Check Balance
+        const wallet = await Wallet.findOne({ userId: user.id });
+        if (!wallet) throw new ApiError(httpStatus.NOT_FOUND, 'Wallet not found');
+
+        if (wallet.liveBalanceUsd < amountUsd) {
+            throw new ApiError(httpStatus.BAD_REQUEST, 'Insufficient balance');
+        }
+
+        // 2. Generate Code FIRST (to get ID)
+        const part1 = crypto.randomInt(1000, 9999);
+        const part2 = crypto.randomBytes(2).toString('hex').toUpperCase();
+        const code = `SGT-USD-${part1}-${part2}`;
+
+        const redemptionCode = await new SgcRedemptionCode({
+            code,
+            userId: user.id,
+            amountUsd,
+            status: 'PENDING',
+            expiresAt: moment().add(15, 'minutes').toDate(), // 15 min expiry
+        }).save();
+
+        // 3. Deduct Balance
+        wallet.liveBalanceUsd -= amountUsd;
+        await wallet.save();
+
+        // 4. Create Ledger Entry with Reference ID
+        await new LedgerEntry({
+            walletId: wallet.id,
+            userId: user.id,
+            type: 'WITHDRAWAL',
+            mode: 'LIVE',
+            amountUsd: -amountUsd,
+            referenceType: 'SGC_REVERSE_TRANSFER',
+            referenceId: redemptionCode.id // Now we have it
+        }).save();
+
+        return { 
+            id: redemptionCode.id,
+            code, 
+            amountUsd, 
+            expiresAt: redemptionCode.expiresAt 
+        };
+
+    } catch (error) {
+        throw error;
+    }
+};
+
+/**
+ * REVERSE TRANSFER: Verify and Burn
+ * Called by SGChain via Internal API
+ */
+export const verifyAndBurnReverseTransfer = async (code: string) => {
+    // NO TRANSACTION for DEV environment support
+    try {
+        const redemptionCode = await SgcRedemptionCode.findOne({ code });
+
+        if (!redemptionCode) {
+            throw new ApiError(httpStatus.NOT_FOUND, 'INVALID_CODE');
+        }
+
+        if (redemptionCode.status === 'CLAIMED') {
+            throw new ApiError(httpStatus.CONFLICT, 'CODE_ALREADY_CLAIMED');
+        }
+
+        if (redemptionCode.status === 'CANCELLED') {
+             throw new ApiError(httpStatus.CONFLICT, 'CODE_CANCELLED');
+        }
+
+        if (redemptionCode.status === 'EXPIRED' || moment().isAfter(redemptionCode.expiresAt)) {
+            // If technically expired but not marked yet
+            if (redemptionCode.status !== 'EXPIRED') {
+                redemptionCode.status = 'EXPIRED';
+                await redemptionCode.save();
+            }
+            throw new ApiError(httpStatus.BAD_REQUEST, 'CODE_EXPIRED');
+        }
+
+        // BURN IT
+        redemptionCode.status = 'CLAIMED';
+        redemptionCode.claimedAt = new Date();
+        await redemptionCode.save();
+
+        return {
+            status: 'SUCCESS',
+            amountUsd: redemptionCode.amountUsd,
+            sgTradingUserId: redemptionCode.userId
+        };
+
+    } catch (error) {
+        throw error;
+    }
+};
+
+/**
+ * Refund Expired Code
+ */
+export const refundReverseTransfer = async (user: IUser, codeId: string) => {
+    // NO TRANSACTION for DEV environment support
+    try {
+        const redemptionCode = await SgcRedemptionCode.findOne({ _id: codeId, userId: user.id });
+        if (!redemptionCode) throw new ApiError(httpStatus.NOT_FOUND, 'Code not found');
+
+        if (redemptionCode.status === 'CLAIMED') throw new ApiError(httpStatus.BAD_REQUEST, 'Code already claimed');
+        if (redemptionCode.status === 'CANCELLED') throw new ApiError(httpStatus.BAD_REQUEST, 'Code already refunded/cancelled');
+        
+        redemptionCode.status = 'CANCELLED';
+        await redemptionCode.save();
+
+        // Refund Wallet
+        const wallet = await Wallet.findOne({ userId: user.id });
+        if (wallet) {
+            wallet.liveBalanceUsd += redemptionCode.amountUsd;
+            await wallet.save();
+            
+            await new LedgerEntry({
+                walletId: wallet.id,
+                userId: user.id,
+                type: 'REFUND', // Or ADJUSTMENT
+                mode: 'LIVE',
+                amountUsd: redemptionCode.amountUsd,
+                referenceType: 'SGC_REVERSE_TRANSFER',
+                referenceId: redemptionCode.id
+            }).save();
+        }
+
+        return { status: 'CANCELLED', amountUsd: redemptionCode.amountUsd };
+
+    } catch (error) {
+        throw error;
+    }
 };

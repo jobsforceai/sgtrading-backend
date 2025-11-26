@@ -72,3 +72,13 @@ export const getMyParticipations = async (req: IAuthRequest, res: Response, next
         next(error);
     }
 };
+
+export const withdrawFromVault = async (req: IAuthRequest, res: Response, next: NextFunction) => {
+    try {
+        const { vaultId } = req.params;
+        const result = await vaultService.withdrawFromFundingVault(req.user!, vaultId);
+        res.status(httpStatus.OK).send(result);
+    } catch (error) {
+        next(error);
+    }
+};

@@ -15,6 +15,8 @@ import moment from 'moment';
 import logger from '../../common/utils/logger';
 
 import InvestmentVault, { IInvestmentVault } from '../vaults/investmentVault.model';
+import { getStrategy } from '../bots/strategies/registry';
+import { PLATFORM_FEES } from '../../config/definitions';
 
 interface IOpenTradePayload {
   mode: 'LIVE' | 'DEMO';
@@ -24,9 +26,6 @@ interface IOpenTradePayload {
   expirySeconds: number;
   botId?: string;
 }
-
-// ... existing code ...
-
 
 // Helper to handle transactions with fallback for standalone MongoDB (Dev envs)
 const runInTransaction = async <T>(callback: (session: ClientSession | null) => Promise<T>): Promise<T> => {
@@ -231,23 +230,90 @@ export const settleTrade = async (tradeId: string) => {
 
     if (outcome === 'WIN') {
       const grossPayout = trade.stakeUsd + (trade.stakeUsd * trade.payoutPercent / 100);
-      payout = grossPayout;
-
-      // Bot Profit Sharing
+      const grossProfit = grossPayout - trade.stakeUsd;
+      
+      // 1. Calculate Platform Fee
+      let platformRate = PLATFORM_FEES.BASE_FEE_PERCENT;
       if (bot) {
-          // Priority: Use Master Bot's percentage if this is a clone (Enforce Franchise Rule)
-          const sharePercent = bot.clonedFrom ? bot.clonedFrom.profitSharePercent : bot.profitSharePercent;
+          const strategy = getStrategy(bot.strategy);
+          if (strategy && strategy.isPremium) {
+              platformRate += PLATFORM_FEES.PREMIUM_SURCHARGE_PERCENT;
+          }
+      }
+      const platformCut = grossProfit * (platformRate / 100);
 
-          if (sharePercent > 0) {
-              const grossProfit = grossPayout - trade.stakeUsd;
-              platformFee = grossProfit * (sharePercent / 100);
-              payout -= platformFee;
-              
-              // --- FUTURE: ROUTE FEE TO CREATOR ---
-              // If bot.clonedFrom exists, 'platformFee' should technically be 'creatorFee'
-              // const creatorId = bot.clonedFrom.userId;
-              // await Wallet.findOneAndUpdate({ userId: creatorId }, { $inc: { liveBalanceUsd: platformFee } });
-              // await LedgerEntry.create({ ... type: 'CREATOR_FEE_RECEIVED' ... });
+      // 2. Calculate Creator Fee
+      let creatorCut = 0;
+      if (bot) {
+          // Use Master Bot's percentage if this is a clone
+          const sharePercent = bot.clonedFrom ? bot.clonedFrom.profitSharePercent : bot.profitSharePercent;
+          
+          // Only apply Creator Fee if it's NOT the creator trading their own bot
+          // (Self-use exemption)
+          if (trade.userId.toString() !== bot.creatorId?.toString()) {
+             creatorCut = grossProfit * (sharePercent / 100);
+          }
+      }
+
+      // 3. Deduct from Payout
+      payout = grossPayout - platformCut - creatorCut;
+      platformFee = platformCut; // Store purely for historical record/analytics if needed
+
+      // 4. Execute Fee Transfers (Platform Fee is just burned/deducted, Creator Fee is transferred)
+      
+      // A. Platform Fee Ledger (Record keeping)
+      if (platformCut > 0) {
+           // We track it against the user's wallet as an outgoing "Fee"
+           // Note: The payout is already reduced, so we create a separate entry 
+           // OR we just record it. Standard ledger usually tracks:
+           // + Gross Payout
+           // - Platform Fee
+           // - Creator Fee
+           // But our logic typically does: Wallet += Net Payout.
+           // Let's record the deductions for transparency.
+           await new LedgerEntry({
+            walletId: trade.walletId,
+            userId: trade.userId,
+            type: 'PLATFORM_FEE',
+            mode: trade.mode,
+            amountUsd: -platformCut, // Negative because it's a cost
+            referenceType: 'TRADE',
+            referenceId: trade.id,
+           }).save({ session: session || null });
+      }
+
+      // B. Creator Fee Transfer
+      if (creatorCut > 0 && bot) {
+          // Determine Creator ID (Master or current)
+          const creatorId = bot.clonedFrom ? bot.clonedFrom.userId : bot.userId;
+          const creatorWallet = await Wallet.findOne({ userId: creatorId }).session(session || null);
+          
+          if (creatorWallet) {
+              // Credit Creator
+              const balanceField = trade.mode === 'LIVE' ? 'liveBalanceUsd' : 'demoBalanceUsd';
+              await Wallet.findByIdAndUpdate(creatorWallet.id, { $inc: { [balanceField]: creatorCut } }, { session: session || null });
+
+              // Ledger for Creator
+              await new LedgerEntry({
+                walletId: creatorWallet.id,
+                userId: creatorId,
+                type: 'PLATFORM_FEE', // Re-using enum, logically 'CREATOR_PROFIT_SHARE'
+                mode: trade.mode,
+                amountUsd: creatorCut,
+                referenceType: 'TRADE',
+                referenceId: trade.id,
+               }).save({ session: session || null });
+               
+               // Ledger for User (Deduction)
+               await new LedgerEntry({
+                walletId: trade.walletId,
+                userId: trade.userId,
+                type: 'PLATFORM_FEE', // Using 'PLATFORM_FEE' enum for generic fee deduction
+                mode: trade.mode,
+                amountUsd: -creatorCut,
+                referenceType: 'TRADE',
+                referenceId: trade.id,
+               }).save({ session: session || null });
           }
       }
     } else if (outcome === 'DRAW') {

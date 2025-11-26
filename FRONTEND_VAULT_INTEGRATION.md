@@ -63,12 +63,13 @@ This guide details the changes required to integrate the new **Personal Bot**, *
 
 | Method | Endpoint | Description | Payload / Params |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/vaults` | List all active/funding vaults. **(Now populates bot details)** | - |
-| `GET` | `/api/v1/vaults/me/participations` | **(New)** List all vaults user invested in. | - |
-| `GET` | `/api/v1/vaults/:id` | Get details of a specific vault. **(Now populates bot details)** | - |
+| `GET` | `/api/v1/vaults` | List all active/funding vaults. **(Populates bot details)** | - |
+| `GET` | `/api/v1/vaults/me/participations` | List all vaults user invested in. | - |
+| `GET` | `/api/v1/vaults/:id` | Get details of a specific vault. **(Populates bot details)** | - |
 | `POST` | `/api/v1/vaults` | **(Creator)** Create a new Vault. | See "Create Vault Payload" |
 | `POST` | `/api/v1/vaults/:id/deposit` | **(User)** Invest in a vault. | `{ amountUsd: 1000, buyInsurance: true/false }` |
 | `POST` | `/api/v1/vaults/:id/activate` | **(Creator)** Start the vault (Locks Collateral). | - |
+| `POST` | `/api/v1/vaults/:id/withdraw` | **(User)** Withdraw funding (Refund). | **Condition:** Only if Vault is `FUNDING` and `>10 days` old. |
 
 **Create Vault Payload:**
 ```json
@@ -100,7 +101,7 @@ This guide details the changes required to integrate the new **Personal Bot**, *
 *   **Page:** `/vaults` or `/invest`
 *   **UI:** List of Vaults with a Progress Bar (Current Pool / Target).
     *   Display: "Target: $35,000", "Locked: 30 Days", "Insurance Available: Yes (6% Fee)".
-    *   **Bot Details:** Now that `GET /api/v1/vaults` populates `botId`, you can access `vault.botId.name` and `vault.botId.strategy` to display the bot driving the fund.
+    *   **Bot Details:** Access `vault.botId.name` and `vault.botId.strategy` to display info.
 *   **Creator View:**
     *   If `totalPoolAmount >= targetAmountUsd` AND `status === 'FUNDING'`, show an **"ACTIVATE VAULT"** button.
     *   **Warning Modal:** "Activating this vault will lock $XX,XXX from your Live Balance as collateral. Proceed?"
@@ -115,6 +116,10 @@ This guide details the changes required to integrate the new **Personal Bot**, *
         *   *Example:* "Investing $1000. You have $200 Bonus. We will deduce $200 from Bonus and $800 from Live Balance."
         *   **Insurance Fee:** Backend strictly deducts this from **Live Balance**. Ensure user has enough Live Balance for the fee.
     *   Call `POST /api/v1/vaults/:id/deposit`.
+*   **User View (Withdrawal/Refund):**
+    *   Show "Withdraw Funding" button on the Vault Details page.
+    *   **Logic:** Only enable if `vault.status === 'FUNDING'` AND `Date.now() > (vault.createdAt + 10 days)`.
+    *   Call `POST /api/v1/vaults/:id/withdraw`.
 
 ### Feature 3: My Portfolio / Dashboard updates
 *   **Page:** `/dashboard`

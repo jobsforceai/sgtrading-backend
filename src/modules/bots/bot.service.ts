@@ -89,6 +89,11 @@ export const updateBot = async (user: IUser, botId: string, update: Partial<IBot
       }
   }
 
+  // --- BLOCK RE-FRANCHISING (Clones cannot be made Public) ---
+  if (update.visibility === 'PUBLIC' && bot.clonedFrom) {
+      throw new ApiError(httpStatus.FORBIDDEN, 'Cloned bots cannot be made public');
+  }
+
   // Deep merge config to prevent overwriting required fields
   if (update.config) {
       bot.config = { ...bot.config, ...update.config };

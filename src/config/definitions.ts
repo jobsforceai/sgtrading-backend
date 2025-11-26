@@ -21,3 +21,8 @@ export const TRADING_DEFINITIONS = {
   "slowPeriod": "Long-term trend lookback. Usually 26-50.",
   "signalPeriod": "Smoothing line for the indicator. Usually 9.",
 };
+
+export const PLATFORM_FEES = {
+  BASE_FEE_PERCENT: 5,
+  PREMIUM_SURCHARGE_PERCENT: 20,
+};

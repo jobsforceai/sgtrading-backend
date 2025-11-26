@@ -87,10 +87,17 @@ export const depositIntoVault = async (user: IUser, payload: IDepositPayload) =>
     if (!vault) throw new ApiError(httpStatus.NOT_FOUND, 'Vault not found');
     if (vault.status !== 'FUNDING') throw new ApiError(httpStatus.BAD_REQUEST, 'Vault is not accepting deposits');
     
+    // Insurance Validation
+    if (buyInsurance && vault.creatorCollateralPercent <= 0) {
+        throw new ApiError(httpStatus.BAD_REQUEST, 'Insurance is not available for this vault (0% Collateral)');
+    }
+    
     // Check if adding this amount exceeds target?
     if (vault.totalPoolAmount + amountUsd > vault.targetAmountUsd) {
         throw new ApiError(httpStatus.BAD_REQUEST, `Deposit exceeds vault target. Remaining space: ${vault.targetAmountUsd - vault.totalPoolAmount}`);
     }
+
+    logger.info({ userId: user.id, vaultId, amountUsd, buyInsurance }, 'Starting Deposit Process');
 
     // 2. Get User Wallet
     const wallet = await Wallet.findOne({ userId: user.id }).session(session);
@@ -99,7 +106,7 @@ export const depositIntoVault = async (user: IUser, payload: IDepositPayload) =>
     // 3. Calculate Costs
     let insuranceFee = 0;
     if (buyInsurance) {
-        // Insurance is 6% of the invested amount (New Policy)
+        // Insurance is 6% of the invested amount
         insuranceFee = amountUsd * 0.06;
     }
 
@@ -142,6 +149,7 @@ export const depositIntoVault = async (user: IUser, payload: IDepositPayload) =>
     }
 
     await wallet.save({ session });
+    logger.info({ userId: user.id, walletId: wallet.id }, 'Wallet funds deducted');
 
     // 5. Create Ledger for Deposit
     await new LedgerEntry({
@@ -163,7 +171,7 @@ export const depositIntoVault = async (user: IUser, payload: IDepositPayload) =>
         if (buyInsurance) {
              participation.isInsured = true;
              participation.insuranceFeePaidUsd += insuranceFee;
-             participation.insuranceCoverageUsd += (amountUsd * 0.30); // 30% coverage logic (New Policy)
+             participation.insuranceCoverageUsd += (amountUsd * 0.30); // 30% coverage logic
         }
         await participation.save({ session });
     } else {
@@ -174,16 +182,18 @@ export const depositIntoVault = async (user: IUser, payload: IDepositPayload) =>
             amountLockedUsd: amountUsd,
             isInsured: buyInsurance,
             insuranceFeePaidUsd: insuranceFee,
-            insuranceCoverageUsd: buyInsurance ? (amountUsd * 0.30) : 0, // 30% coverage logic
+            insuranceCoverageUsd: buyInsurance ? (amountUsd * 0.30) : 0,
             status: 'ACTIVE'
         });
         await participation.save({ session });
     }
+    logger.info({ userId: user.id, participationId: participation.id }, 'Participation record updated');
 
     // 7. Update Vault Totals
     vault.totalPoolAmount += amountUsd;
     vault.userPoolAmount += amountUsd;
     await vault.save({ session });
+    logger.info({ vaultId: vault.id, newTotal: vault.totalPoolAmount }, 'Vault totals updated. Deposit Complete.');
 
     return { vault, participation };
   });
@@ -240,6 +250,91 @@ export const activateVault = async (user: IUser, vaultId: string) => {
     await vault.save({ session });
 
     return vault;
+  });
+};
+
+export const withdrawFromFundingVault = async (user: IUser, vaultId: string) => {
+  return runInTransaction(async (session) => {
+    const vault = await InvestmentVault.findById(vaultId).session(session);
+    if (!vault) throw new ApiError(httpStatus.NOT_FOUND, 'Vault not found');
+
+    // 1. Check Status
+    if (vault.status !== 'FUNDING') {
+        throw new ApiError(httpStatus.BAD_REQUEST, 'Cannot withdraw. Vault is not in FUNDING state (might be Active/Settled).');
+    }
+
+    // 2. Check 10-Day Lock
+    const now = new Date();
+    const createdAt = (vault as any).createdAt; // Mongoose timestamp
+    const unlockDate = new Date(createdAt.getTime() + (10 * 24 * 60 * 60 * 1000)); // +10 Days
+
+    if (now < unlockDate) {
+        const daysLeft = Math.ceil((unlockDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        throw new ApiError(httpStatus.FORBIDDEN, `Funds are locked for the 10-day funding period. You can withdraw in ${daysLeft} days.`);
+    }
+
+    // 3. Get Participation
+    const participation = await VaultParticipation.findOne({ userId: user.id, vaultId: vault.id }).session(session);
+    if (!participation || participation.amountLockedUsd <= 0) {
+        throw new ApiError(httpStatus.BAD_REQUEST, 'No funds to withdraw');
+    }
+
+    const refundAmount = participation.amountLockedUsd;
+
+    // 4. Refund Wallet
+    // Note: We refunded strictly to Live Balance.
+    // If they used Bonus, it's converted to Live here? 
+    // Given the complexity, yes, returning to Live is safest/simplest for now as "Returned Capital".
+    // Or if we tracked bonus usage, we'd split it. We didn't track it.
+    const wallet = await Wallet.findOne({ userId: user.id }).session(session);
+    if (!wallet) throw new ApiError(httpStatus.NOT_FOUND, 'Wallet not found');
+
+    wallet.liveBalanceUsd += refundAmount;
+    await wallet.save({ session });
+
+    // 5. Update Vault
+    vault.totalPoolAmount -= refundAmount;
+    vault.userPoolAmount -= refundAmount;
+    await vault.save({ session });
+
+    // 6. Update Participation
+    participation.amountLockedUsd = 0;
+    participation.status = 'REFUNDED';
+    participation.isInsured = false; // Reset insurance state
+    participation.insuranceCoverageUsd = 0;
+    // Note: Insurance Fee is NOT refunded? Usually fees are sunk costs.
+    // If the vault failed to launch, fair practice is to refund fee too.
+    // Let's refund the fee too if we tracked it.
+    if (participation.insuranceFeePaidUsd > 0) {
+        wallet.liveBalanceUsd += participation.insuranceFeePaidUsd;
+        await wallet.save({ session }); // Save again with fee
+        await new LedgerEntry({
+            walletId: wallet.id,
+            userId: user.id,
+            type: 'ADJUSTMENT', // Refund Fee
+            mode: 'LIVE',
+            amountUsd: participation.insuranceFeePaidUsd,
+            referenceType: 'INVESTMENT_VAULT',
+            referenceId: vault.id
+        }).save({ session });
+    }
+    
+    await participation.save({ session });
+
+    // Ledger
+    await new LedgerEntry({
+        walletId: wallet.id,
+        userId: user.id,
+        type: 'VAULT_REFUND',
+        mode: 'LIVE',
+        amountUsd: refundAmount,
+        referenceType: 'INVESTMENT_VAULT',
+        referenceId: vault.id
+    }).save({ session });
+
+    logger.info({ userId: user.id, vaultId, amount: refundAmount }, 'User withdrew from Funding Vault (Post-Lock)');
+    
+    return { success: true, amountRefunded: refundAmount };
   });
 };
 

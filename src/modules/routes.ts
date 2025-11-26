@@ -17,7 +17,8 @@ router.use('/users', userRoutes);
 router.use('/wallets', walletRoutes);
 router.use('/markets', marketRoutes);
 router.use('/trades', tradingRoutes);
-router.use('/sgc-onramp', sgcOnrampRoutes);
+router.use('/sgc-offramp', sgcOnrampRoutes); // Restore alias for frontend compatibility
+router.use('/', sgcOnrampRoutes); // Handles /deposits, /withdrawals, /internal, /redeem
 router.use('/admin', adminRoutes);
 router.use('/bots', botRoutes);
 router.use('/vaults', vaultRoutes);
