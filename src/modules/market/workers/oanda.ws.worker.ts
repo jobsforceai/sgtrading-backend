@@ -87,10 +87,19 @@ const connect = () => {
     });
 };
 
+let subscriptionTimeout: NodeJS.Timeout | null = null;
+
 const handleSubscriptionChange = () => {
+  // Clear any pending restart to debounce effectively
+  if (subscriptionTimeout) {
+    clearTimeout(subscriptionTimeout);
+  }
+
   // Debounce the connect function to avoid restarting the stream too frequently
-  // if multiple subscribe/unsubscribe requests come in at once.
-  setTimeout(connect, 1000);
+  subscriptionTimeout = setTimeout(() => {
+    connect();
+    subscriptionTimeout = null;
+  }, 3000);
 };
 
 export const startOandaWsWorker = () => {

@@ -1,8 +1,9 @@
 import axios from 'axios';
 import logger from '../../common/utils/logger';
+import { config } from '../../config/config';
 
 export class BinanceProvider {
-  private baseUrl = 'https://api.binance.com/api/v3';
+  private baseUrl = config.binance.apiUrl;
 
   async getCandles(symbol: string, resolution: string, from: number, to: number) {
     // Binance resolution mapping

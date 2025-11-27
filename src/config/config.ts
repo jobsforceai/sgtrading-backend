@@ -32,6 +32,8 @@ const envSchema = z.object({
   ALPACA_PAPER_API_URL: z.string().url(),
   ALPACA_DATA_WS_URL: z.string().url(),
   ALPACA_DATA_API_URL: z.string().url(),
+  BINANCE_API_URL: z.string().url().default('https://api.binance.com/api/v3'),
+  BINANCE_WS_URL: z.string().url().default('wss://stream.binance.com:9443'),
   TWELVEDATA_API_KEY: z.string().optional(), // Optional for now to avoid crash if not set immediately
   SGCHAIN_API_URL: z.string().url().optional(), // URL for SGChain integration
   SGCHAIN_SECRET: z.string().optional(), // Shared secret for SGChain integration
@@ -45,8 +47,8 @@ const envSchema = z.object({
 const env = envSchema.parse(process.env);
 
 let redisConfig = {
-  host: env.REDIS_HOST || 'localhost',
-  port: env.REDIS_PORT || 6379,
+  host: env.REDIS_HOST || 'redis-11317.c270.us-east-1-3.ec2.cloud.redislabs.com',
+  port: env.REDIS_PORT || 11317,
   username: env.REDIS_USERNAME || undefined,
   password: env.REDIS_PASSWORD || undefined,
   tls: env.REDIS_TLS === 'true' ? true : undefined as boolean | undefined,
@@ -107,6 +109,10 @@ export const config = {
     paperApiUrl: env.ALPACA_PAPER_API_URL,
     dataWsUrl: env.ALPACA_DATA_WS_URL,
     dataApiUrl: env.ALPACA_DATA_API_URL,
+  },
+  binance: {
+    apiUrl: env.BINANCE_API_URL,
+    wsUrl: env.BINANCE_WS_URL,
   },
   twelvedata: {
     apiKey: env.TWELVEDATA_API_KEY,

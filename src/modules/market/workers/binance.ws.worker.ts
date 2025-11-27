@@ -3,6 +3,7 @@ import redisClient from '../../../config/redis';
 import logger from '../../../common/utils/logger';
 import { STOCK_SYMBOLS } from '../market.config';
 import { CandleService } from '../candle.service';
+import { config } from '../../../config/config';
 
 const PRICE_KEY = (symbol: string) => `price:BINANCE:${symbol.toLowerCase()}`;
 const CONTROL_CHANNEL = 'market-control-channel';
@@ -30,7 +31,7 @@ const subscribeToSymbol = (symbol: string) => {
     return;
   }
 
-  const url = `wss://stream.binance.com:9443/ws/${lowerSymbol}@trade`;
+  const url = `${config.binance.wsUrl}/ws/${lowerSymbol}@trade`;
   const ws = new WebSocket(url);
 
   ws.on('open', () => {
