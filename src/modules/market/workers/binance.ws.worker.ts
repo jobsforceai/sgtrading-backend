@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 import redisClient from '../../../config/redis';
 import logger from '../../../common/utils/logger';
-import { STOCK_SYMBOLS } from '../market.config';
+import { STOCK_SYMBOLS, SYNTHETIC_SYMBOLS } from '../market.config';
 import { CandleService } from '../candle.service';
 import { config } from '../../../config/config';
 
@@ -23,6 +23,10 @@ const subscribeToSymbol = (symbol: string) => {
   }
   if (STOCK_SYMBOLS.map((s: string) => s.toLowerCase()).includes(lowerSymbol)) {
     // Stock symbols (e.g. aapl)
+    return;
+  }
+  if (SYNTHETIC_SYMBOLS.map((s: string) => s.toLowerCase()).includes(lowerSymbol)) {
+    // Synthetic/Internal symbols (e.g. sgc)
     return;
   }
 
