@@ -32,8 +32,6 @@ const envSchema = z.object({
   ALPACA_PAPER_API_URL: z.string().url(),
   ALPACA_DATA_WS_URL: z.string().url(),
   ALPACA_DATA_API_URL: z.string().url(),
-  BINANCE_API_URL: z.string().url().default('https://api.binance.com/api/v3'),
-  BINANCE_WS_URL: z.string().url().default('wss://stream.binance.com:9443'),
   TWELVEDATA_API_KEY: z.string().optional(), // Optional for now to avoid crash if not set immediately
   SGCHAIN_API_URL: z.string().url().optional(), // URL for SGChain integration
   SGCHAIN_SECRET: z.string().optional(), // Shared secret for SGChain integration
@@ -109,10 +107,6 @@ export const config = {
     paperApiUrl: env.ALPACA_PAPER_API_URL,
     dataWsUrl: env.ALPACA_DATA_WS_URL,
     dataApiUrl: env.ALPACA_DATA_API_URL,
-  },
-  binance: {
-    apiUrl: env.BINANCE_API_URL,
-    wsUrl: env.BINANCE_WS_URL,
   },
   twelvedata: {
     apiKey: env.TWELVEDATA_API_KEY,

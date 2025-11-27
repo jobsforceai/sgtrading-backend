@@ -1,16 +1,8 @@
 // src/scripts/updateInstruments.ts
+import { config } from '../config/config';
 import Instrument from '../modules/market/instrument.model';
 import logger from '../common/utils/logger';
 import mongoose from 'mongoose';
-import dotenv from 'dotenv';
-import path from 'path';
-
-// Load environment variables
-const nodeEnv = process.env.NODE_ENV || 'development';
-const envPath = path.resolve(process.cwd(), `.env.${nodeEnv}`);
-dotenv.config({ path: envPath });
-
-const MONGO_URI = process.env.MONGO_URI;
 
 const desiredInstruments = [
   // Crypto
@@ -69,14 +61,14 @@ const desiredInstruments = [
 ];
 
 const runUpdate = async () => {
-  if (!MONGO_URI) {
+  if (!config.mongo.uri) {
     logger.error('MONGO_URI is not defined in environment variables.');
     process.exit(1);
   }
 
   try {
     logger.info('Connecting to MongoDB...');
-    await mongoose.connect(MONGO_URI);
+    await mongoose.connect(config.mongo.uri);
     logger.info('MongoDB connected.');
 
     // 1. Upsert all desired instruments
