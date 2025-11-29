@@ -170,7 +170,7 @@ const updatePriceForSymbol = async (symbol: string) => {
       ts: now,
     };
 
-    await redisClient.set(PRICE_KEY(symbol), JSON.stringify(tick));
+    await redisClient.set(PRICE_KEY(symbol), JSON.stringify(tick), { EX: 60 });
     await redisClient.publish(TICKS_CHANNEL, JSON.stringify(tick));
     
     // We use upper case symbol for DB consistency with CandleService expectations

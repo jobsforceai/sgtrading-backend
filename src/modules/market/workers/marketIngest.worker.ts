@@ -33,7 +33,7 @@ export const startMarketIngestWorker = () => {
       for (const tick of ticks) {
         if (tick) {
           // Store directly in Redis using Finnhub-specific key
-          await redisClient.set(FINNHUB_PRICE_KEY(tick.symbol), JSON.stringify(tick));
+          await redisClient.set(FINNHUB_PRICE_KEY(tick.symbol), JSON.stringify(tick), { EX: 60 });
           logger.debug({ symbol: tick.symbol, last: tick.last }, `Cached Finnhub tick for ${tick.symbol}`);
         }
       }

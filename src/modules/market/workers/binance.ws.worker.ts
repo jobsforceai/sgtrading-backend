@@ -31,7 +31,7 @@ const subscribeToSymbol = (symbol: string) => {
   }
 
   if (activeSubscriptions.has(lowerSymbol)) {
-    logger.warn({ symbol: lowerSymbol }, 'Already subscribed to this symbol.');
+    logger.debug({ symbol: lowerSymbol }, 'Already subscribed to this symbol.');
     return;
   }
 
@@ -53,7 +53,7 @@ const subscribeToSymbol = (symbol: string) => {
       const tick = { symbol: msg.s.toLowerCase(), last: price, ts };
 
       // 1. Store in Redis for REST API polling
-      await redisClient.set(PRICE_KEY(tick.symbol), JSON.stringify(tick));
+      await redisClient.set(PRICE_KEY(tick.symbol), JSON.stringify(tick), { EX: 60 });
 
       // 2. Publish to a ticks channel for our own socket.io server to broadcast
       await redisClient.publish('market-ticks-channel', JSON.stringify(tick));

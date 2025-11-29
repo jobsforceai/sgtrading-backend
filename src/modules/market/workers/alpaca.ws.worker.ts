@@ -96,7 +96,7 @@ const connect = () => {
           const tick = { symbol, last: price, ts };
           
           // 1. Redis Cache
-          redisClient.set(PRICE_KEY(symbol), JSON.stringify(tick));
+          redisClient.set(PRICE_KEY(symbol), JSON.stringify(tick), { EX: 60 });
           
           // 2. PubSub for Frontend
           redisClient.publish('market-ticks-channel', JSON.stringify(tick));
@@ -107,6 +107,11 @@ const connect = () => {
 
         } else if (msg.T === 'error') {
           logger.error({ error: msg }, 'Alpaca WS error message');
+          if (msg.code === 406) {
+              logger.error('CRITICAL: Alpaca Connection Limit Exceeded. Stopping worker to prevent ban. Please close other instances.');
+              ws.close();
+              process.exit(1); // Force exit this worker process (pm2/docker will restart it eventually, effectively backing off)
+          }
         } else if (msg.T === 'subscription') {
           logger.info({ count: msg.trades.length }, 'Alpaca WS subscription confirmed');
         }

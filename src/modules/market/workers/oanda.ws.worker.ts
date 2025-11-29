@@ -61,7 +61,7 @@ const connect = () => {
               const ts = new Date(data.time).getTime();
               const tick = { symbol, last: parseFloat(last.toFixed(5)), ts };
 
-              redisClient.set(PRICE_KEY(symbol), JSON.stringify(tick));
+              redisClient.set(PRICE_KEY(symbol), JSON.stringify(tick), { EX: 60 });
               redisClient.publish('market-ticks-channel', JSON.stringify(tick));
 
               // Persist Candle History

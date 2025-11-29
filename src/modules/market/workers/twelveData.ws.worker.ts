@@ -114,7 +114,7 @@ export const startTwelveDataWsWorker = async () => {
         };
 
         // Store in Redis
-        await redisClient.set(PRICE_KEY(symbol), JSON.stringify(tick));
+        await redisClient.set(PRICE_KEY(symbol), JSON.stringify(tick), { EX: 60 });
         
         // Publish to channel
         await redisClient.publish('market-ticks-channel', JSON.stringify(tick));
