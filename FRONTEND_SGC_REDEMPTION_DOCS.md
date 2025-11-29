@@ -1,127 +1,54 @@
-# SGTrading Frontend Integration Guide: SGC Redemption
+# Frontend SGC Redemption Integration Guide
 
-This document details how to integrate the SGC Redemption feature into the SGTrading frontend, allowing users to deposit real money using a redemption code obtained from SGChain.
+This guide details how to integrate the "Redeem Code" functionality (depositing funds via a generated code).
 
-## Overview
+## 1. The Endpoint
 
-The user flow is as follows:
+**Note:** The endpoint is at the root of the API version, or under the compatibility alias.
 
-1.  The user obtains an SGC redemption code (e.g., `SGT-FF47D3-5ABB90`) from the SGChain platform.
-    *   **IMPORTANT:** This code is valid for only **10 minutes** from generation.
-2.  The user navigates to a "Deposit / Redeem" section in SGTrading.
-3.  The user enters the redemption code into an input field and submits it.
-4.  The SGTrading frontend calls the backend API to process the code.
-5.  Upon successful redemption, the user's live balance in USD is updated.
+*   **Primary URL:** `POST /api/v1/redeem`
+*   **Alternate URL:** `POST /api/v1/sgc-offramp/redeem`
 
-## API Endpoint Details
+**Incorrect URLs (Do NOT use):**
+*   ❌ `/api/v1/deposits/redeem` (404 Not Found)
+*   ❌ `/api/v1/sgc/redeem` (404 Not Found)
 
-*   **URL:** `POST /api/v1/sgc-onramp/redeem`
-*   **Authentication:** Requires a valid `Authorization: Bearer <JWT_TOKEN>` header.
-*   **Request Body (JSON):**
+## 2. Request Payload
 
-    ```json
-    {
-      "code": "SGT-FF47D3-5ABB90"
-    }
-    ```
+**Method:** `POST`
+**Headers:**
+*   `Content-Type: application/json`
+*   `Authorization: Bearer <token>`
 
-*   **Success Response (200 OK - JSON):**
-
-    ```json
-    {
-      "amountUsd": 120.50,         // The amount of USD credited
-      "originalSgcAmount": 100,    // The original SGC amount
-      "transferId": "651..."       // Unique ID of the transfer record
-    }
-    ```
-
-*   **Error Responses (JSON):**
-    The backend maps specific SGChain errors to user-friendly messages. You should display the `message` field directly to the user.
-
-    *   **400 Bad Request**
-        *   `"Invalid code format"`: Code structure is wrong (too short, etc.).
-        *   `"This code has expired (10 min limit). Please generate a new one on SGChain."`
-    *   **404 Not Found**
-        *   `"Invalid redemption code."`: The code does not exist.
-    *   **409 Conflict**
-        *   `"This code has already been used."`: User is trying to double-spend.
-    *   **503 Service Unavailable**
-        *   `"Transfer failed on the blockchain. Funds remain in your SGChain account..."`: Critical upstream failure. Safe to tell user their funds are still on SGChain.
-
-## Frontend Implementation Steps
-
-### 1. User Interface (UI)
-
-Create a UI component for code submission.
-
-*   **Input Field:** `id="sgcRedeemCodeInput"`, `placeholder="Enter SGC Code (e.g., SGT-XXXX-YYYY)"`
-*   **Helper Text:** "Codes expire in 10 minutes." (Helpful for UX).
-*   **Submit Button:** `id="redeemSgcButton"`
-*   **Message Area:** `id="sgcRedeemMessage"`
-
-### 2. JavaScript Logic (Example)
-
-```javascript
-document.getElementById('redeemSgcButton').addEventListener('click', async () => {
-  const codeInput = document.getElementById('sgcRedeemCodeInput');
-  const messageArea = document.getElementById('sgcRedeemMessage');
-  const redeemButton = document.getElementById('redeemSgcButton');
-
-  const code = codeInput.value.trim();
-  if (!code) return;
-
-  // UI Reset
-  messageArea.textContent = 'Processing...';
-  messageArea.className = 'text-info'; // Example class
-  redeemButton.disabled = true;
-
-  try {
-    const jwtToken = localStorage.getItem('jwtToken'); // Get Auth Token
-    
-    const response = await fetch('/api/v1/sgc-onramp/redeem', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${jwtToken}`,
-      },
-      body: JSON.stringify({ code }),
-    });
-
-    const data = await response.json();
-
-    if (response.ok) {
-      // SUCCESS
-      messageArea.className = 'text-success';
-      messageArea.innerHTML = `
-        <strong>Success!</strong> <br>
-        Credited: $${data.amountUsd.toFixed(2)} USD <br>
-        (from ${data.originalSgcAmount} SGC)
-      `;
-      codeInput.value = ''; 
-      
-      // TODO: Trigger wallet balance refresh here
-      // updateWalletDisplay(); 
-
-    } else {
-      // ERROR - Display the message from backend
-      messageArea.className = 'text-danger';
-      // Backend sends standard error format: { code, message, stack }
-      const errorMsg = data.message || 'Redemption failed.';
-      messageArea.textContent = errorMsg;
-    }
-
-  } catch (error) {
-    messageArea.className = 'text-danger';
-    messageArea.textContent = 'Network error. Please check your connection.';
-  } finally {
-    redeemButton.disabled = false;
-  }
-});
+**Body:**
+```json
+{
+  "code": "SGT-1234-ABCD"
+}
 ```
 
-### 3. Key UX Considerations
+## 3. Response
 
-1.  **Expiry Warning:** Since codes expire in 10 minutes, if a user gets an "Expired" error, the UI should clearly guide them: *"Go back to SGChain and generate a new code."*
-2.  **Safety:** If the backend returns a 503 (Blockchain Failure), reassure the user that their funds are **not lost**—they are still in their SGChain account.
+**Success (200 OK):**
+```json
+{
+  "amountUsd": 100,
+  "originalSgcAmount": 1,
+  "transferId": "txn_123456789"
+}
+```
 
----
+**Error (4xx/5xx):**
+*   **400 Bad Request:** Code expired, invalid format, or already claimed.
+*   **404 Not Found:** Invalid code (if the code itself doesn't exist in the system).
+*   **401 Unauthorized:** Missing or invalid Bearer token.
+
+## 4. Troubleshooting 404 Errors
+
+If you see a `404 Not Found` error in the logs (from `src/app.ts`), it means you are sending the request to the **wrong URL path**.
+
+**Check your network tab:**
+*   Are you sending to `https://api.yourdomain.com/api/v1/redeem`?
+*   Or did you accidentally append it to another path like `/api/v1/wallet/redeem`?
+
+**Correct Path:** `/api/v1/redeem`

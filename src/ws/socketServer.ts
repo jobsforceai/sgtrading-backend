@@ -12,40 +12,52 @@ const activeSubscriptions = new Map<string, number>(); // symbol -> count
 const marketCache = new MarketCacheService();
 
 const handleSubscribe = async (socket: Socket, symbol: string) => {
-  logger.info({ clientId: socket.id, symbol }, 'Client subscribing');
-  const room = `market:${symbol}`;
+  const lowerSymbol = symbol.toLowerCase();
+  
+  // Detailed Logging for Debugging
+  logger.info({ 
+      event: 'Subscription Request', 
+      clientId: socket.id, 
+      rawSymbol: symbol, 
+      normalized: lowerSymbol,
+      room: `market:${lowerSymbol}`
+  }, 'Client requested subscription');
+
+  logger.info({ clientId: socket.id, symbol: lowerSymbol }, 'Client subscribing');
+  const room = `market:${lowerSymbol}`;
   socket.join(room);
 
   // Immediately fetch and emit the latest cached tick so the user sees data instantly
   try {
-    const tick = await marketCache.getTick(symbol);
+    const tick = await marketCache.getTick(lowerSymbol);
     if (tick) {
       socket.emit('market:tick', tick);
     }
   } catch (error) {
-    logger.error({ err: error, symbol }, 'Failed to fetch initial tick for subscriber');
+    logger.error({ err: error, symbol: lowerSymbol }, 'Failed to fetch initial tick for subscriber');
   }
 
-  const currentCount = activeSubscriptions.get(symbol) || 0;
+  const currentCount = activeSubscriptions.get(lowerSymbol) || 0;
   if (currentCount === 0) {
     // First subscriber for this symbol, tell the workers to start fetching
-    redisClient.publish(CONTROL_CHANNEL, JSON.stringify({ action: 'subscribe', symbol }));
+    redisClient.publish(CONTROL_CHANNEL, JSON.stringify({ action: 'subscribe', symbol: lowerSymbol }));
   }
-  activeSubscriptions.set(symbol, currentCount + 1);
+  activeSubscriptions.set(lowerSymbol, currentCount + 1);
 };
 
 const handleUnsubscribe = (socket: Socket, symbol: string) => {
-  logger.info({ clientId: socket.id, symbol }, 'Client unsubscribing');
-  const room = `market:${symbol}`;
+  const lowerSymbol = symbol.toLowerCase();
+  logger.info({ clientId: socket.id, symbol: lowerSymbol }, 'Client unsubscribing');
+  const room = `market:${lowerSymbol}`;
   socket.leave(room);
 
-  const currentCount = activeSubscriptions.get(symbol) || 1;
+  const currentCount = activeSubscriptions.get(lowerSymbol) || 1;
   if (currentCount === 1) {
     // Last subscriber for this symbol, tell the workers to stop fetching
-    redisClient.publish(CONTROL_CHANNEL, JSON.stringify({ action: 'unsubscribe', symbol }));
-    activeSubscriptions.delete(symbol);
+    redisClient.publish(CONTROL_CHANNEL, JSON.stringify({ action: 'unsubscribe', symbol: lowerSymbol }));
+    activeSubscriptions.delete(lowerSymbol);
   } else {
-    activeSubscriptions.set(symbol, currentCount - 1);
+    activeSubscriptions.set(lowerSymbol, currentCount - 1);
   }
 };
 

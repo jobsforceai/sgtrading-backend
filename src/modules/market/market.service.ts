@@ -4,13 +4,21 @@ import logger from '../../common/utils/logger';
 import { YahooProvider } from './yahoo.provider';
 import { BinanceProvider } from './binance.provider';
 import redisClient from '../../config/redis';
-import { SYNTHETIC_SYMBOLS, BINANCE_SYMBOLS } from './market.config';
+import { SYNTHETIC_SYMBOLS, BINANCE_SYMBOLS, STOCK_SYMBOLS, OANDA_SYMBOLS } from './market.config';
 import { CandleService } from './candle.service';
+
+import { isMarketOpen } from '../../common/utils/marketHours';
 
 const marketCache = new MarketCacheService();
 const yahooProvider = new YahooProvider();
 const binanceProvider = new BinanceProvider();
 const candleService = new CandleService();
+
+// Helper to get instrument from cache to avoid DB hits
+const getInstrumentCached = async (symbol: string) => {
+    const instruments = await listInstruments(); // Uses Redis cache
+    return instruments.find((i: any) => i.symbol === symbol.toLowerCase());
+};
 
 // Internal map to convert our backend symbols to the format Yahoo Finance expects
 const toYahooSymbol = (backendSymbol: string): string => {
@@ -20,50 +28,97 @@ const toYahooSymbol = (backendSymbol: string): string => {
     'solusdt': 'SOL-USD',
     'dogeusdt': 'DOGE-USD',
     'adausdt': 'ADA-USD',
+    // Forex & Commodities
     'eur_usd': 'EURUSD=X',
     'gbp_usd': 'GBPUSD=X',
     'usd_jpy': 'JPY=X',
     'usd_cad': 'CAD=X',
     'aud_usd': 'AUDUSD=X',
+    'usd_chf': 'CHF=X', // Corrected for Yahoo
+    'nzd_usd': 'NZDUSD=X',
+    'eur_gbp': 'EURGBP=X',
+    'eur_jpy': 'EURJPY=X',
+    'gbp_jpy': 'GBPJPY=X',
+    'aud_jpy': 'AUDJPY=X',
     'xau_usd': 'GC=F', // Gold Futures (Reliable Yahoo symbol for Gold)
     'xag_usd': 'SI=F', // Silver Futures
+    'xpt_usd': 'PL=F', // Platinum Futures
+    'xpd_usd': 'PA=F', // Palladium Futures
+    'wtico_usd': 'CL=F', // Crude Oil Futures
+    'bco_usd': 'BZ=F', // Brent Crude Futures
+    'natgas_usd': 'NG=F', // Natural Gas Futures
   };
   // Default to the symbol uppercased (e.g. aapl -> AAPL) if no mapping exists
   return map[backendSymbol] || backendSymbol.toUpperCase();
 };
 
-// Helper to check if symbol is crypto
+// Helper to check if symbol is crypto (Binance or USDT/BTC pairs)
 const isCrypto = (symbol: string) => {
   return BINANCE_SYMBOLS.includes(symbol.toLowerCase()) || symbol.toLowerCase().includes('usdt') || symbol.toLowerCase().includes('btc');
+};
+
+// Helper to check if symbol is Forex or Commodity (OANDA handled)
+const isForexOrCommodity = (symbol: string) => {
+  return OANDA_SYMBOLS.includes(symbol.toLowerCase());
+};
+
+// Helper to check if symbol is a stock (Alpaca/TwelveData handled or Finnhub polled)
+const isStock = (symbol: string) => {
+    return STOCK_SYMBOLS.includes(symbol.toLowerCase());
 };
 
 export const listInstruments = async () => {
   // In a real app, you'd cache this list in Redis
   const cacheKey = 'instruments:all';
+  let instruments: any[] = [];
+  
   const cached = await redisClient.get(cacheKey);
   if (cached) {
-    return JSON.parse(cached);
+    instruments = JSON.parse(cached);
+  } else {
+    instruments = await Instrument.find({ isEnabled: true }).lean();
+    await redisClient.set(cacheKey, JSON.stringify(instruments), { EX: 60 * 5 }); // Cache for 5 mins
   }
-  const instruments = await Instrument.find({ isEnabled: true });
-  await redisClient.set(cacheKey, JSON.stringify(instruments), { EX: 60 * 5 }); // Cache for 5 mins
-  return instruments;
+
+  // Calculate market status in real-time for every request
+  return instruments.map(inst => ({
+      ...inst,
+      isMarketOpen: isMarketOpen(inst)
+  }));
 };
 
 export const getQuote = async (symbol: string) => {
-  return marketCache.getTick(symbol.toLowerCase());
+  const tick = await marketCache.getTick(symbol.toLowerCase());
+  
+  if (tick) {
+      const instrument = await getInstrumentCached(symbol);
+      if (instrument) {
+          tick.isOpen = isMarketOpen(instrument);
+      } else {
+          tick.isOpen = true; // Default to open if unknown instrument
+      }
+  }
+  
+  return tick;
 };
 
 export const fetchCurrentPrice = async (symbol: string): Promise<number | null> => {
-  // 1. Try Cache
-  const tick = await marketCache.getTick(symbol.toLowerCase());
+  const lowerSymbol = symbol.toLowerCase();
+
+  // 1. Try Cache first (primary source for all WS workers + marketIngest worker)
+  const tick = await marketCache.getTick(lowerSymbol);
   if (tick) return tick.last;
 
-  // 2. Try REST Provider
-  if (isCrypto(symbol)) {
-      return await binanceProvider.getLatestPrice(symbol);
+  // 2. Fallback to REST providers if not in cache (ordered by reliability/preference)
+  if (isCrypto(lowerSymbol)) {
+      return await binanceProvider.getLatestPrice(lowerSymbol);
+  } else if (isForexOrCommodity(lowerSymbol) || isStock(lowerSymbol)) {
+      // For non-crypto, try Yahoo as a robust general fallback for current price
+      const yahooSymbol = toYahooSymbol(lowerSymbol);
+      return await yahooProvider.getLatestPrice(yahooSymbol);
   }
   
-  // Fallback for others if needed (e.g. Yahoo) in future
+  // If nothing else, return null
   return null;
 };
 

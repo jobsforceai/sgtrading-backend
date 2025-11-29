@@ -70,3 +70,11 @@ export const recoverStuckTrades = async () => {
     logger.error({ err: error }, 'Error during stuck trade recovery');
   }
 };
+
+export const startRecoveryWorker = () => {
+  logger.info('Starting Trade Recovery Worker (Polling Fallback)...');
+  // Run immediately
+  recoverStuckTrades();
+  // Poll every 10 seconds to catch dropped Redis jobs quickly
+  setInterval(recoverStuckTrades, 10000);
+};

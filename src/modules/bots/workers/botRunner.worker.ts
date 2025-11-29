@@ -13,8 +13,12 @@ import InvestmentVault from '../../vaults/investmentVault.model';
 const CONTROL_CHANNEL = 'market-control-channel';
 
 const processBots = async () => {
-  // Populate clonedFrom to access Parent Bot details (Status, Insurance, Profit Share)
-  const bots = await Bot.find({ status: 'ACTIVE' }).populate('clonedFrom');
+  // Optimization: Use .lean() to return plain JS objects instead of heavy Mongoose documents.
+  // This significantly reduces memory usage when processing many bots.
+  const bots = await Bot.find({ status: 'ACTIVE' })
+    .populate('clonedFrom')
+    .lean();
+    
   // logger.info({ count: bots.length }, 'Processing active bots');
 
   // 0. Ensure Market Data Subscriptions
@@ -59,8 +63,7 @@ const processBots = async () => {
 
       const user = await User.findById(bot.userId);
       if (!user) {
-        bot.status = 'PAUSED';
-        await bot.save();
+        await Bot.updateOne({ _id: bot._id }, { $set: { status: 'PAUSED' } });
         continue;
       }
 
@@ -110,7 +113,7 @@ const processBots = async () => {
         }
 
         if (direction) {
-            logger.info({ botId: bot.id, symbol, strategy: bot.strategy, direction }, 'Bot Triggering Trade');
+            logger.info({ botId: bot._id, symbol, strategy: bot.strategy, direction }, 'Bot Triggering Trade');
             
             // A. Trigger Personal Trade (The Creator's Trade)
             try {
@@ -120,22 +123,21 @@ const processBots = async () => {
                 direction,
                 stakeUsd: bot.config.tradeAmount,
                 expirySeconds: bot.config.expirySeconds,
-                botId: bot.id,
+                botId: bot._id.toString(),
             });
             // Increment local tracker to prevent over-trading in this same tick
             bot.stats.activeTrades += 1; 
             } catch (err: any) {
-            logger.warn({ botId: bot.id, err: err.message }, 'Bot failed to place trade');
+            logger.warn({ botId: bot._id, err: err.message }, 'Bot failed to place trade');
             if (err.message.includes('Insufficient funds')) {
-                bot.status = 'PAUSED';
-                await bot.save();
+                await Bot.updateOne({ _id: bot._id }, { $set: { status: 'PAUSED' } });
                 break; // Stop processing this bot
             }
             }
 
             // B. Trigger Vault Trades (If this bot runs a Hedge Fund)
             try {
-                const activeVaults = await InvestmentVault.find({ botId: bot.id, status: 'ACTIVE' });
+                const activeVaults = await InvestmentVault.find({ botId: bot._id, status: 'ACTIVE' });
                 if (activeVaults.length > 0) {
                     logger.info({ count: activeVaults.length }, 'Triggering Vault Trades linked to this bot');
                     for (const vault of activeVaults) {
@@ -149,7 +151,7 @@ const processBots = async () => {
       }
 
     } catch (error) {
-      logger.error({ botId: bot.id, err: error }, 'Error processing bot');
+      logger.error({ botId: bot._id, err: error }, 'Error processing bot');
     }
   }
 };

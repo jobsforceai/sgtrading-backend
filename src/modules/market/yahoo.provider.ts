@@ -73,4 +73,20 @@ export class YahooProvider {
       return [];
     }
   }
+
+  async getLatestPrice(symbol: string): Promise<number | null> {
+    try {
+      // Yahoo Finance symbols often include suffixes for certain types, but for basic stocks/forex
+      // it should be fine as is (e.g., AAPL, EURUSD=X).
+      const quote = await yahooFinance.quote(symbol, {}, { validateResult: false }); // Pass as moduleOptions
+      if (quote && quote.regularMarketPrice) {
+        return quote.regularMarketPrice;
+      }
+      logger.warn({ symbol }, 'Yahoo Finance returned no regularMarketPrice for latest price.');
+      return null;
+    } catch (error) {
+      logger.error({ err: error, symbol }, 'Error fetching latest price from Yahoo Finance');
+      return null;
+    }
+  }
 }

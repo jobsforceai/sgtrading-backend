@@ -13,7 +13,7 @@ import { startBotRunnerWorker } from './modules/bots/workers/botRunner.worker';
 import { startBinanceWsWorker } from './modules/market/workers/binance.ws.worker';
 import { startOandaWsWorker } from './modules/market/workers/oanda.ws.worker';
 import { startAlpacaWsWorker } from './modules/market/workers/alpaca.ws.worker';
-import { recoverStuckTrades } from './modules/trading/workers/recovery.worker';
+import { startRecoveryWorker } from './modules/trading/workers/recovery.worker';
 import { startGapFillerWorker } from './modules/market/workers/gapFiller.worker';
 import { seedDatabase } from './config/seeder';
 import { initSocketServer } from './ws/socketServer';
@@ -48,8 +48,8 @@ const startServer = async () => {
       await redisClient.publish(CONTROL_CHANNEL, JSON.stringify({ action: 'subscribe', symbol }));
     }
 
-    // Attempt to recover any trades stuck during downtime
-    await recoverStuckTrades();
+    // Start Recovery Worker (Polling fallback for dropped jobs)
+    startRecoveryWorker();
     
     // Start Gap Filler (Runs on startup + periodically)
     startGapFillerWorker();

@@ -17,6 +17,7 @@ import logger from '../../common/utils/logger';
 import InvestmentVault, { IInvestmentVault } from '../vaults/investmentVault.model';
 import { getStrategy } from '../bots/strategies/registry';
 import { PLATFORM_FEES } from '../../config/definitions';
+import { isMarketOpen } from '../../common/utils/marketHours';
 
 interface IOpenTradePayload {
   mode: 'LIVE' | 'DEMO';
@@ -27,44 +28,56 @@ interface IOpenTradePayload {
   botId?: string;
 }
 
-// Helper to handle transactions with fallback for standalone MongoDB (Dev envs)
+// Helper to handle transactions with fallback for standalone MongoDB (Dev envs) and Retry Logic
 const runInTransaction = async <T>(callback: (session: ClientSession | null) => Promise<T>): Promise<T> => {
   const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-    const result = await callback(session);
-    await session.commitTransaction();
-    return result;
-  } catch (error: any) {
-    // Abort the transaction if it started
-    if (session.inTransaction()) {
-        await session.abortTransaction();
+  let attempt = 0;
+  const MAX_RETRIES = 3;
+
+  while (attempt < MAX_RETRIES) {
+    try {
+      session.startTransaction();
+      const result = await callback(session);
+      await session.commitTransaction();
+      return result;
+    } catch (error: any) {
+      // Abort current transaction attempt
+      if (session.inTransaction()) {
+          await session.abortTransaction();
+      }
+
+      // 1. Handle TransientTransactionError / WriteConflict (Retryable)
+      const isTransient = error.errorLabels?.includes('TransientTransactionError') || 
+                          error.code === 112 || 
+                          error.codeName === 'WriteConflict' ||
+                          (error.message && error.message.includes('Write conflict'));
+
+      if (isTransient && attempt < MAX_RETRIES - 1) {
+          attempt++;
+          const backoff = Math.floor(Math.random() * 100) + (attempt * 50); // Jittered backoff
+          logger.warn({ err: error.message, attempt }, 'Transient transaction error. Retrying...');
+          await new Promise(r => setTimeout(r, backoff));
+          continue; // Retry loop
+      }
+
+      // 2. Handle Standalone/Dev Environment (Non-Replica Set)
+      if (error.message && (error.message.includes('Transaction numbers are only allowed on a replica set') || error.message.includes('This MongoDB deployment does not support retryable writes'))) {
+         logger.warn('MongoDB is not a Replica Set. Retrying operation WITHOUT transaction safety.');
+         // Retry the callback without a session
+         return callback(null);
+      }
+
+      // 3. Fatal Error -> Throw
+      throw error;
+    } finally {
+      // Only end session if we are done or throwing final error
+      if (attempt >= MAX_RETRIES || !session.inTransaction()) {
+          // logic usually ends session in finally
+      }
     }
-
-    // Check for the specific "standalone" error or "transaction numbers" error
-    if (error.message && (error.message.includes('Transaction numbers are only allowed on a replica set') || error.message.includes('This MongoDB deployment does not support retryable writes'))) {
-       logger.warn('MongoDB is not a Replica Set. Retrying operation WITHOUT transaction safety.');
-       // Retry the callback without a session
-       return callback(null);
-    }
-    throw error;
-  } finally {
-    await session.endSession();
   }
-};
-
-const isMarketOpen = (instrument: any): boolean => {
-  if (!instrument.tradingHours || !instrument.tradingHours.sessions || instrument.tradingHours.sessions.length === 0) {
-    return true;
-  }
-  const now = moment.utc();
-  const dayOfWeek = now.day(); // 0-6
-  const currentHm = now.format('HH:mm');
-
-  const session = instrument.tradingHours.sessions.find((s: any) => s.dayOfWeek === dayOfWeek);
-  if (!session) return false;
-
-  return currentHm >= session.open && currentHm <= session.close;
+  await session.endSession();
+  throw new Error('Transaction failed after max retries');
 };
 
 export const openTrade = async (user: IUser, payload: IOpenTradePayload) => {
@@ -143,11 +156,17 @@ export const openTrade = async (user: IUser, payload: IOpenTradePayload) => {
     const balanceField = mode === 'LIVE' ? 'liveBalanceUsd' : 'demoBalanceUsd';
     await wallet.updateOne({ $inc: { [balanceField]: -stakeUsd } }, { session: session || null });
 
-    // 5. Enqueue the settlement job
+    // 5. Enqueue the settlement job (Redundant backup)
     await tradeSettlementQueue.add('settle-trade', { tradeId: trade.id }, {
       delay: expirySeconds * 1000,
       jobId: trade.id, 
     });
+
+    // 5b. Schedule Immediate In-Memory Settlement (Primary High-Precision Trigger)
+    // This ensures trades settle instantly without waiting for Redis/Worker latency.
+    setTimeout(() => {
+        settleTrade(trade.id).catch(err => logger.error({ err, tradeId: trade.id }, 'In-memory settlement failed'));
+    }, expirySeconds * 1000);
 
     // 6. Update Bot Stats if applicable
     if (botId) {

@@ -4,6 +4,7 @@ export interface MarketTick {
   ask: number | null;
   last: number;
   ts: number; // ms since epoch
+  isOpen?: boolean;
 }
 
 export interface MarketDataProvider {

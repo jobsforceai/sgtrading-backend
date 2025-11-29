@@ -11,13 +11,7 @@ if (!fs.existsSync(logDir)) {
 
 const transport = pino.transport({
   targets: [
-    // 1. Write everything to a file (app.log)
-    {
-      target: 'pino/file',
-      options: { destination: path.join(logDir, 'app.log'), mkdir: true },
-      level: 'debug',
-    },
-    // 2. Write only WARN and ERROR to the console to reduce flood
+    // Write only to console (stdout) for cloud environments
     {
       target: 'pino-pretty',
       options: {
@@ -25,7 +19,7 @@ const transport = pino.transport({
         translateTime: 'SYS:standard',
         ignore: 'pid,hostname',
       },
-      level: 'warn', 
+      level: 'info', // Default to info for production
     },
   ],
 });

@@ -20,8 +20,8 @@ const createBotSchema = z.object({
         tradeAmount: z.number().positive(),
         expirySeconds: z.number().positive(),
         maxConcurrentTrades: z.number().min(1).optional(),
-        stopLossAmount: z.number().positive().optional(),
-        takeProfitAmount: z.number().positive().optional(),
+        stopLossAmount: z.number().min(0).optional(),
+        takeProfitAmount: z.number().min(0).optional(),
     }).optional(),
   }).refine((data) => {
       if (data.clonedFrom) return true; // Cloning: Strategy/Assets inherited
