@@ -87,7 +87,7 @@ const updatePriceForSymbol = async (symbol: string) => {
 
       // Simulate a stable, low-volatility random walk
       // No drift (drift = 0), just small noise
-      const volatility = 0.005; // Very small volatility for stability
+      const volatility = 0.0005; // Reduced from 0.005 to 0.0005 for tighter spreads (~0.05-0.10 movement)
       const shock = boxMullerRandom() * volatility;
       
       nextPrice = currentPrice + shock;
