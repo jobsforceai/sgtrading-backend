@@ -108,9 +108,10 @@ const connect = () => {
         } else if (msg.T === 'error') {
           logger.error({ error: msg }, 'Alpaca WS error message');
           if (msg.code === 406) {
-              logger.error('CRITICAL: Alpaca Connection Limit Exceeded. Stopping worker to prevent ban. Please close other instances.');
+              logger.warn('Alpaca Connection Limit Exceeded. Closing socket to trigger retry in 3s.');
               ws.close();
-              process.exit(1); // Force exit this worker process (pm2/docker will restart it eventually, effectively backing off)
+              // Removed process.exit(1) to prevent crashing the entire Render service.
+              // The close handler will auto-reconnect.
           }
         } else if (msg.T === 'subscription') {
           logger.info({ count: msg.trades.length }, 'Alpaca WS subscription confirmed');

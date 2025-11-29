@@ -9,7 +9,7 @@ const envPath = path.resolve(process.cwd(), `.env.${nodeEnv}`);
 dotenv.config({ path: envPath });
 
 const SOURCE_URI = process.env.MONGO_URI;
-const DEST_URI = 'mongodb+srv://jobsforceai_db_user:jobsforceai_db_user@cluster0.d2dtjrb.mongodb.net/?appName=Cluster0';
+const DEST_URI = 'abv';
 
 if (!SOURCE_URI) {
     console.error('❌ SOURCE_URI (MONGO_URI) is not defined in .env');

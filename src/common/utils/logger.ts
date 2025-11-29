@@ -19,7 +19,7 @@ const transport = pino.transport({
         translateTime: 'SYS:standard',
         ignore: 'pid,hostname',
       },
-      level: 'info', // Default to info for production
+      level: 'warn', 
     },
   ],
 });
