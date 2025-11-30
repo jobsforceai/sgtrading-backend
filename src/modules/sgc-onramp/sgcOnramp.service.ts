@@ -163,12 +163,15 @@ export const redeemCode = async (user: IUser, code: string) => {
       throw new ApiError(httpStatus.NOT_FOUND, 'Wallet not found');
     }
 
+    const bonusAmount = amountUsd; // 100% Bonus Offer
+
     await Wallet.findByIdAndUpdate(
       wallet.id,
-      { $inc: { liveBalanceUsd: amountUsd } }
+      { $inc: { liveBalanceUsd: amountUsd, bonusBalanceUsd: bonusAmount } }
     );
 
-    // 2. Create Ledger Entry
+    // 2. Create Ledger Entries
+    // Main Deposit
     await new LedgerEntry({
       walletId: wallet.id,
       userId: user.id,
@@ -178,10 +181,21 @@ export const redeemCode = async (user: IUser, code: string) => {
       referenceType: 'SGC_REDEMPTION',
       referenceId: transferId, // External ID from SGChain
     }).save();
+
+    // Bonus Entry
+    await new LedgerEntry({
+      walletId: wallet.id,
+      userId: user.id,
+      type: 'BONUS',
+      mode: 'LIVE',
+      amountUsd: bonusAmount,
+      referenceType: 'SGC_REDEMPTION',
+      referenceId: transferId,
+    }).save();
     
     logger.info({ userId: user.id, code, amountUsd, transferId }, 'SGC Redemption Successful');
     
-    return { amountUsd, originalSgcAmount, transferId };
+    return { amountUsd, bonusAmount, originalSgcAmount, transferId };
 
   } catch (error: any) {
     logger.error({ err: error, userId: user.id, code }, 'SGC Redemption Failed');
